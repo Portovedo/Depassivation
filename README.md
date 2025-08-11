@@ -54,6 +54,38 @@ A Python-based graphical user interface (GUI) for controlling and monitoring a b
 6.  **After the process is complete:**
     *   You can export the graph and data using the **Exportar Gráfico** (Export Graph) and **Exportar Dados** (Export Data) buttons.
 
+## Firmware Requirements
+
+This GUI is designed to work with an ESP32 microcontroller running firmware that adheres to a specific communication protocol over a serial connection (baud rate: 115200).
+
+### Commands
+
+The GUI sends the following commands to the ESP32:
+
+*   `START,duration,voltage`: Initiates the depassivation process.
+    *   `duration`: The test duration in seconds.
+    *   `voltage`: The pass/fail voltage threshold in Volts.
+    *   Example: `START,60,3.2`
+*   `ABORT`: Stops the current process immediately.
+
+### Data Format
+
+The ESP32 is expected to send data back to the GUI in the following format:
+
+*   `DATA,time_ms,voltage_v,current_ma`: A data point from the measurement.
+    *   `time_ms`: The timestamp in milliseconds since the start of the process.
+    *   `voltage_v`: The measured voltage in Volts.
+    *   `current_ma`: The measured current in milliamps.
+    *   Example: `DATA,1000,3.5,150.5`
+*   Any other line sent by the ESP32 will be displayed in the log area.
+*   The ESP32 should send `PROCESS_END` when the process is finished.
+
+## Troubleshooting
+
+*   **ESP32 not detected**: If you see the error "Nenhuma porta ESP32 detetada", make sure your ESP32 is properly connected to the computer's USB port. You may also need to install the correct drivers for your ESP32's USB-to-serial chip (e.g., CP210x, CH340).
+*   **Invalid input errors**: Ensure that the "Duração" (duration) and "Tensão Passa/Falha" (pass/fail voltage) fields contain valid numbers.
+*   **Data processing errors**: If you see "Falha ao processar dados" errors in the log, it means the data received from the ESP32 is not in the expected format. Check that your ESP32 firmware is sending data in the format `DATA,time_ms,voltage_v,current_ma`.
+
 ## Profile Management
 
 You can save your current test configuration as a profile for easy reuse.
