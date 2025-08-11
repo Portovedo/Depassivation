@@ -1,5 +1,6 @@
 import tkinter as tk
-from tkinter import scrolledtext, filedialog, messagebox
+from tkinter import scrolledtext, filedialog, messagebox, ttk
+from tkinter.ttk import Style
 import serial
 from serial.tools import list_ports
 import threading
@@ -18,7 +19,17 @@ class DepassivationApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Estação de Despassivação de Baterias")
-        self.root.geometry("800x700")
+        self.root.geometry("800x750")
+
+        style = ttk.Style(root)
+        style.theme_use('clam')
+        style.configure('TButton', font=('Helvetica', 10))
+        style.configure('success.TButton', background='#4CAF50', foreground='white', font=('Helvetica', 12, 'bold'))
+        style.map('success.TButton', background=[('active', '#45a049')])
+        style.configure('danger.TButton', background='#f44336', foreground='white', font=('Helvetica', 12, 'bold'))
+        style.map('danger.TButton', background=[('active', '#e53935')])
+        style.configure('pass.TLabel', background='green', foreground='white', font=('Helvetica', 16, 'bold'))
+        style.configure('fail.TLabel', background='red', foreground='white', font=('Helvetica', 16, 'bold'))
 
         self.serial_connection = None
         self.is_running = False
@@ -29,26 +40,38 @@ class DepassivationApp:
         self.min_voltage = 0.0
         self.profiles = {}
 
-        # --- Configuration Variables ---
         self.duration_var = tk.StringVar(value="10")
         self.pass_fail_voltage_var = tk.StringVar(value="3.2")
         self.profile_name_var = tk.StringVar()
         self.selected_profile_var = tk.StringVar()
+        self.selected_port_var = tk.StringVar()
 
-        # --- UI Elements ---
-        self.main_frame = tk.Frame(root, padx=10, pady=10)
+        self.main_frame = ttk.Frame(root, padding="10")
         self.main_frame.pack(fill=tk.BOTH, expand=True)
-        self.main_frame.grid_rowconfigure(0, weight=4)
-        self.main_frame.grid_rowconfigure(3, weight=1)
+        self.main_frame.grid_rowconfigure(1, weight=4)
+        self.main_frame.grid_rowconfigure(4, weight=1)
         self.main_frame.grid_columnconfigure(0, weight=1)
 
-        top_frame = tk.Frame(self.main_frame)
-        top_frame.grid(row=0, column=0, sticky="nsew", pady=5)
+        conn_frame = ttk.LabelFrame(self.main_frame, text="Conexão Serial", padding="10")
+        conn_frame.grid(row=0, column=0, sticky="ew", pady=5)
+        conn_frame.grid_columnconfigure(0, weight=1)
+
+        self.port_combobox = ttk.Combobox(conn_frame, textvariable=self.selected_port_var, state='readonly')
+        self.port_combobox.grid(row=0, column=0, sticky="ew", padx=(0,5))
+
+        self.refresh_ports_button = ttk.Button(conn_frame, text="Atualizar Portas", command=self._refresh_port_list)
+        self.refresh_ports_button.grid(row=0, column=1, padx=5)
+
+        self.connect_button = ttk.Button(conn_frame, text="Conectar", command=self.toggle_connection)
+        self.connect_button.grid(row=0, column=2, padx=5)
+
+        top_frame = ttk.Frame(self.main_frame)
+        top_frame.grid(row=1, column=0, sticky="nsew", pady=5)
         top_frame.grid_columnconfigure(0, weight=3)
         top_frame.grid_columnconfigure(1, weight=1)
         top_frame.grid_rowconfigure(0, weight=1)
 
-        graph_frame = tk.LabelFrame(top_frame, text="Gráfico: Tensão (V) vs. Tempo (s)", padx=10, pady=10)
+        graph_frame = ttk.LabelFrame(top_frame, text="Gráfico: Tensão (V) vs. Tempo (s)", padding="10")
         graph_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
 
         self.fig = Figure(figsize=(5, 4), dpi=100)
@@ -57,82 +80,165 @@ class DepassivationApp:
         self.canvas = FigureCanvasTkAgg(self.fig, master=graph_frame)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        stats_frame = tk.LabelFrame(top_frame, text="Métricas", padx=10, pady=10)
+        stats_frame = ttk.LabelFrame(top_frame, text="Métricas", padding="10")
         stats_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
 
-        self.voltage_label = tk.Label(stats_frame, text="Tensão Atual: -- V", font=("Helvetica", 12))
+        self.voltage_label = ttk.Label(stats_frame, text="Tensão Atual: -- V", font=("Helvetica", 12))
         self.voltage_label.pack(anchor="w", pady=5)
 
-        self.current_label = tk.Label(stats_frame, text="Corrente Atual: -- mA", font=("Helvetica", 12))
+        self.current_label = ttk.Label(stats_frame, text="Corrente Atual: -- mA", font=("Helvetica", 12))
         self.current_label.pack(anchor="w", pady=5)
 
-        self.min_voltage_label = tk.Label(stats_frame, text="Tensão Mínima: -- V", font=("Helvetica", 12, "bold"))
+        self.min_voltage_label = ttk.Label(stats_frame, text="Tensão Mínima: -- V", font=("Helvetica", 12, "bold"))
         self.min_voltage_label.pack(anchor="w", pady=10)
 
-        control_frame = tk.LabelFrame(self.main_frame, text="Controlo e Exportação", padx=10, pady=10)
-        control_frame.grid(row=1, column=0, sticky="ew", pady=5)
+        ttk.Separator(stats_frame, orient='horizontal').pack(fill='x', pady=10, padx=5)
 
-        self.start_button = tk.Button(control_frame, text="Iniciar Processo", command=self.start_process, font=("Helvetica", 12), bg="#4CAF50", fg="white")
-        self.start_button.pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
+        self.pass_fail_label = ttk.Label(stats_frame, text="---", font=("Helvetica", 16, "bold"), anchor="center")
+        self.pass_fail_label.pack(fill='x', expand=True, pady=5)
 
-        self.abort_button = tk.Button(control_frame, text="Abortar Processo", command=self.abort_process, font=("Helvetica", 12), bg="#f44336", fg="white", state=tk.DISABLED)
-        self.abort_button.pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
 
-        separator = tk.Frame(control_frame, height=20, width=2, bg="grey")
-        separator.pack(side=tk.LEFT, padx=10, fill='y')
+        control_frame = ttk.LabelFrame(self.main_frame, text="Controlo e Exportação", padding="10")
+        control_frame.grid(row=2, column=0, sticky="ew", pady=5)
+        control_frame.column_configure(0, weight=1)
 
-        self.export_graph_button = tk.Button(control_frame, text="Exportar Gráfico", command=self.export_graph, state=tk.DISABLED)
-        self.export_graph_button.pack(side=tk.LEFT, padx=5)
+        button_frame = ttk.Frame(control_frame)
+        button_frame.grid(row=0, column=0, sticky="ew")
+        button_frame.column_configure(0, weight=1)
+        button_frame.column_configure(1, weight=1)
 
-        self.export_data_button = tk.Button(control_frame, text="Exportar Dados", command=self.export_data, state=tk.DISABLED)
-        self.export_data_button.pack(side=tk.LEFT, padx=5)
+        self.start_button = ttk.Button(button_frame, text="Iniciar Processo", command=self.start_process, style='success.TButton', state=tk.DISABLED)
+        self.start_button.grid(row=0, column=0, sticky="ew", padx=(0,5))
 
-        settings_area_frame = tk.Frame(self.main_frame)
-        settings_area_frame.grid(row=2, column=0, sticky="ew", pady=5)
+        self.abort_button = ttk.Button(button_frame, text="Abortar Processo", command=self.abort_process, state=tk.DISABLED, style='danger.TButton')
+        self.abort_button.grid(row=0, column=1, sticky="ew", padx=(5,0))
+
+        self.progressbar = ttk.Progressbar(control_frame, orient='horizontal', mode='determinate')
+        self.progressbar.grid(row=1, column=0, sticky="ew", pady=(10,0))
+
+        settings_area_frame = ttk.Frame(self.main_frame)
+        settings_area_frame.grid(row=3, column=0, sticky="ew", pady=5)
         settings_area_frame.grid_columnconfigure(0, weight=1)
         settings_area_frame.grid_columnconfigure(1, weight=1)
 
-        config_frame = tk.LabelFrame(settings_area_frame, text="Configuração do Teste", padx=10, pady=10)
+        config_frame = ttk.LabelFrame(settings_area_frame, text="Configuração do Teste", padding="10")
         config_frame.grid(row=0, column=0, sticky="nsew", padx=(0,5))
 
-        tk.Label(config_frame, text="Duração (s):").pack(anchor="w")
-        self.duration_entry = tk.Entry(config_frame, textvariable=self.duration_var)
+        ttk.Label(config_frame, text="Duração (s):").pack(anchor="w")
+        self.duration_entry = ttk.Entry(config_frame, textvariable=self.duration_var)
         self.duration_entry.pack(fill="x", expand=True, pady=(0,5))
 
-        tk.Label(config_frame, text="Tensão Passa/Falha (V):").pack(anchor="w")
-        self.pass_fail_entry = tk.Entry(config_frame, textvariable=self.pass_fail_voltage_var)
+        ttk.Label(config_frame, text="Tensão Passa/Falha (V):").pack(anchor="w")
+        self.pass_fail_entry = ttk.Entry(config_frame, textvariable=self.pass_fail_voltage_var)
         self.pass_fail_entry.pack(fill="x", expand=True)
 
-        profiles_frame = tk.LabelFrame(settings_area_frame, text="Perfis de Bateria", padx=10, pady=10)
+        profiles_frame = ttk.LabelFrame(settings_area_frame, text="Perfis de Bateria", padding="10")
         profiles_frame.grid(row=0, column=1, sticky="nsew", padx=(5,0))
         profiles_frame.grid_columnconfigure(0, weight=1)
 
-        tk.Label(profiles_frame, text="Carregar Perfil:").grid(row=0, column=0, sticky="w")
-        self.profile_menu = tk.OptionMenu(profiles_frame, self.selected_profile_var, "Nenhum")
+        ttk.Label(profiles_frame, text="Carregar Perfil:").grid(row=0, column=0, sticky="w")
+        self.profile_menu = ttk.OptionMenu(profiles_frame, self.selected_profile_var, "Nenhum")
         self.profile_menu.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0,5))
 
-        tk.Button(profiles_frame, text="Carregar", command=self.load_profile).grid(row=1, column=2, padx=(5,0))
-        tk.Button(profiles_frame, text="Apagar", command=self.delete_profile).grid(row=1, column=3, padx=(5,0))
+        ttk.Button(profiles_frame, text="Carregar", command=self.load_profile).grid(row=1, column=2, padx=(5,0))
+        ttk.Button(profiles_frame, text="Apagar", command=self.delete_profile).grid(row=1, column=3, padx=(5,0))
 
-        tk.Label(profiles_frame, text="Guardar Perfil Como:").grid(row=2, column=0, sticky="w", pady=(5,0))
-        tk.Entry(profiles_frame, textvariable=self.profile_name_var).grid(row=3, column=0, columnspan=2, sticky="ew")
-        tk.Button(profiles_frame, text="Guardar", command=self.save_profile).grid(row=3, column=2, columnspan=2, padx=(5,0))
+        ttk.Label(profiles_frame, text="Guardar Perfil Como:").grid(row=2, column=0, sticky="w", pady=(5,0))
+        ttk.Entry(profiles_frame, textvariable=self.profile_name_var).grid(row=3, column=0, columnspan=2, sticky="ew")
+        ttk.Button(profiles_frame, text="Guardar", command=self.save_profile).grid(row=3, column=2, columnspan=2, padx=(5,0))
 
-        log_frame = tk.LabelFrame(self.main_frame, text="Registo de Dados", padx=10, pady=10)
-        log_frame.grid(row=3, column=0, sticky="nsew")
+        log_frame = ttk.LabelFrame(self.main_frame, text="Registo de Dados", padding="10")
+        log_frame.grid(row=4, column=0, sticky="nsew")
 
         self.log_area = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, state=tk.DISABLED, font=("Courier New", 10), height=8)
         self.log_area.pack(fill=tk.BOTH, expand=True)
 
         self.status_var = tk.StringVar()
-        self.status_bar = tk.Label(root, textvariable=self.status_var, bd=1, relief=tk.SUNKEN, anchor=tk.W)
+        self.status_bar = ttk.Label(root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.clear_graph_and_stats()
-        self.connect_to_esp32()
         self._load_profiles_from_file()
         self._update_profile_dropdown()
+        self._refresh_port_list()
+
+    # --- Connection Methods ---
+    def _refresh_port_list(self):
+        ports = list_ports.comports()
+        port_names = [port.device for port in ports]
+        self.port_combobox['values'] = port_names
+
+        esp32_port = None
+        for port in ports:
+            if "USB" in port.description or "CP210x" in port.description or "CH340" in port.description:
+                esp32_port = port.device
+                break
+
+        if esp32_port:
+            self.selected_port_var.set(esp32_port)
+        elif port_names:
+            self.selected_port_var.set(port_names[0])
+        else:
+            self.selected_port_var.set("")
+        self.status_var.set("Pronto para conectar. Selecione uma porta e clique em Conectar.")
+
+    def toggle_connection(self):
+        if self.serial_connection and self.serial_connection.is_open:
+            self._disconnect_from_esp32()
+        else:
+            self._connect_to_esp32()
+
+    def _connect_to_esp32(self):
+        port = self.selected_port_var.get()
+        if not port:
+            messagebox.showerror("Erro de Conexão", "Nenhuma porta serial selecionada.")
+            return
+
+        try:
+            self.serial_connection = serial.Serial(port, 115200, timeout=1)
+            self.status_var.set(f"Conectado a {port}. Pronto.")
+            self.log_message(f"INFO: Conexão com ESP32 em {port} estabelecida.")
+
+            self.read_thread = threading.Thread(target=self.read_from_serial, daemon=True)
+            self.read_thread.start()
+
+            self.connect_button.config(text="Desconectar")
+            self.start_button.config(state=tk.NORMAL)
+            self.port_combobox.config(state=tk.DISABLED)
+            self.refresh_ports_button.config(state=tk.DISABLED)
+
+        except serial.SerialException as e:
+            messagebox.showerror("Erro de Conexão", f"Não foi possível abrir a porta {port}.\n{e}")
+            self.log_message(f"ERROR: {e}")
+
+    def _disconnect_from_esp32(self):
+        if self.serial_connection:
+            self.serial_connection.close()
+            self.serial_connection = None
+            self.status_var.set("Desconectado. Selecione uma porta para conectar.")
+            self.log_message("INFO: Conexão terminada.")
+
+            self.connect_button.config(text="Conectar")
+            self.start_button.config(state=tk.DISABLED)
+            self.port_combobox.config(state='readonly')
+            self.refresh_ports_button.config(state=tk.NORMAL)
+
+    def _update_progressbar(self, duration):
+        self.progressbar['maximum'] = duration * 10
+        self.progressbar['value'] = 0
+
+        start_time = time.time()
+        while self.is_running:
+            elapsed = time.time() - start_time
+            if elapsed > duration:
+                break
+
+            self.progressbar['value'] = elapsed * 10
+            time.sleep(0.1)
+
+        self.progressbar['value'] = 0
+
 
     # --- Profile Methods ---
     def _load_profiles_from_file(self):
@@ -167,7 +273,8 @@ class DepassivationApp:
         else:
             for name in profile_names:
                 menu.add_command(label=name, command=lambda value=name: self.selected_profile_var.set(value))
-            self.selected_profile_var.set(profile_names[0])
+            if profile_names:
+                self.selected_profile_var.set(profile_names[0])
 
     def save_profile(self):
         profile_name = self.profile_name_var.get().strip()
@@ -185,7 +292,7 @@ class DepassivationApp:
         self.profiles[profile_name] = {"duration": duration, "voltage": voltage}
         self._save_profiles_to_file()
         self._update_profile_dropdown()
-        self.profile_name_var.set("") # Clear entry after saving
+        self.profile_name_var.set("")
         messagebox.showinfo("Sucesso", f"Perfil '{profile_name}' guardado.")
 
     def load_profile(self):
@@ -201,7 +308,7 @@ class DepassivationApp:
 
     def delete_profile(self):
         profile_name = self.selected_profile_var.get()
-        if profile_name in self.profiles:
+        if profile_name in self.profiles and profile_name != "Nenhum":
             if messagebox.askyesno("Confirmar", f"Tem a certeza que quer apagar o perfil '{profile_name}'?"):
                 del self.profiles[profile_name]
                 self._save_profiles_to_file()
@@ -213,33 +320,6 @@ class DepassivationApp:
 
 
     # --- Core Methods ---
-    def find_esp32_port(self):
-        ports = list_ports.comports()
-        for port in ports:
-            if "USB" in port.description or "CP210x" in port.description or "CH340" in port.description:
-                return port.device
-        return None
-
-    def connect_to_esp32(self):
-        esp32_port = self.find_esp32_port()
-        if esp32_port is None:
-            self.status_var.set("Erro: Nenhuma porta ESP32 detetada. Verifique a ligação.")
-            self.log_message("ERROR: Could not find any potential ESP32 serial ports.")
-            self.start_button.config(state=tk.DISABLED)
-            return
-
-        self.status_var.set(f"A conectar a {esp32_port}...")
-        try:
-            self.serial_connection = serial.Serial(esp32_port, 115200, timeout=1)
-            self.status_var.set(f"Conectado a {esp32_port}. Pronto.")
-            self.log_message(f"INFO: Conexão com ESP32 em {esp32_port} estabelecida.")
-            self.read_thread = threading.Thread(target=self.read_from_serial, daemon=True)
-            self.read_thread.start()
-        except serial.SerialException as e:
-            self.status_var.set(f"Erro: Não foi possível abrir a porta {esp32_port}.")
-            self.log_message(f"ERROR: {e}")
-            self.start_button.config(state=tk.DISABLED)
-
     def log_message(self, message):
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.log_area.config(state=tk.NORMAL)
@@ -259,7 +339,6 @@ class DepassivationApp:
                 raise ValueError("Duration must be positive.")
         except ValueError:
             self.status_var.set("Erro: Duração do teste inválida. Insira um número inteiro positivo.")
-            self.log_message("ERROR: Invalid test duration input.")
             return
 
         try:
@@ -268,7 +347,6 @@ class DepassivationApp:
                 raise ValueError("Voltage must be positive.")
         except ValueError:
             self.status_var.set("Erro: Tensão de Passa/Falha inválida. Insira um número positivo.")
-            self.log_message("ERROR: Invalid pass/fail voltage input.")
             return
 
         self.clear_graph_and_stats()
@@ -280,6 +358,9 @@ class DepassivationApp:
         self.start_button.config(state=tk.DISABLED)
         self.abort_button.config(state=tk.NORMAL)
         self.is_running = True
+
+        progress_thread = threading.Thread(target=self._update_progressbar, args=(duration,), daemon=True)
+        progress_thread.start()
 
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         filename = f"depassivation_log_{timestamp}.csv"
@@ -301,6 +382,7 @@ class DepassivationApp:
 
         self.export_graph_button.config(state=tk.DISABLED)
         self.export_data_button.config(state=tk.DISABLED)
+        self.pass_fail_label.config(text="---", style="TLabel")
 
         self.ax.cla()
         self.ax.set_xlabel("Tempo (s)")
@@ -379,7 +461,10 @@ class DepassivationApp:
     def abort_process(self):
         if self.serial_connection and self.serial_connection.is_open and self.is_running:
             self.serial_connection.write(b'ABORT\n')
+            self.is_running = False # Stop the progress bar thread
             self.log_message("INFO: Processo abortado pelo utilizador.")
+            self.abort_button.config(state=tk.DISABLED)
+            self.start_button.config(state=tk.NORMAL)
 
     def read_from_serial(self):
         while True:
@@ -411,9 +496,22 @@ class DepassivationApp:
             self.is_running = False
             self.start_button.config(state=tk.NORMAL)
             self.abort_button.config(state=tk.DISABLED)
+
             if self.data_points:
                 self.export_graph_button.config(state=tk.NORMAL)
                 self.export_data_button.config(state=tk.NORMAL)
+
+                # Check pass/fail status
+                try:
+                    pass_voltage = float(self.pass_fail_voltage_var.get())
+                    if self.min_voltage >= pass_voltage:
+                        self.pass_fail_label.config(text="PASS", style="pass.TLabel")
+                    else:
+                        self.pass_fail_label.config(text="FAIL", style="fail.TLabel")
+                except ValueError:
+                    self.pass_fail_label.config(text="N/A", style="")
+
+
             if self.log_file:
                 self.log_file.close()
                 self.log_file = None
