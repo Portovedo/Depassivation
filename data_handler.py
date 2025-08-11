@@ -100,6 +100,27 @@ class DataHandler:
             if conn:
                 conn.close()
 
+    def get_test_data(self, test_id):
+        if test_id is None:
+            return []
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT timestamp_ms, voltage, current FROM data_points
+                WHERE test_id = ?
+                ORDER BY timestamp_ms ASC
+            """, (test_id,))
+            data = cursor.fetchall()
+            # Convert from (timestamp_ms, V, A) to (timestamp_s, V, A) for CSV
+            return [(ts / 1000.0, v, c) for ts, v, c in data]
+        except sqlite3.Error as e:
+            self.app.log_message(f"ERROR: Could not fetch test data from database: {e}")
+            return []
+        finally:
+            if conn:
+                conn.close()
+
     def load_profiles(self):
         if os.path.exists(PROFILES_FILE):
             try:
