@@ -121,6 +121,42 @@ class DataHandler:
             if conn:
                 conn.close()
 
+    def get_all_tests_summary(self):
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, timestamp, result FROM tests
+                ORDER BY timestamp DESC
+            """)
+            return cursor.fetchall()
+        except sqlite3.Error as e:
+            self.app.log_message(f"ERROR: Could not fetch test summaries from database: {e}")
+            return []
+        finally:
+            if conn:
+                conn.close()
+
+    def get_test_summary(self, test_id):
+        if test_id is None:
+            return None
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            # Use a dictionary row factory for easy access to columns by name
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM tests WHERE id = ?
+            """, (test_id,))
+            return cursor.fetchone()
+        except sqlite3.Error as e:
+            self.app.log_message(f"ERROR: Could not fetch test summary from database: {e}")
+            return None
+        finally:
+            if conn:
+                conn.close()
+
     def load_profiles(self):
         if os.path.exists(PROFILES_FILE):
             try:
