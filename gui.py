@@ -320,17 +320,37 @@ class DepassivationApp:
         except Exception as e: self.status_var.set(f"Erro ao guardar o gráfico: {e}"); self.log_message(f"ERROR: Failed to save graph: {e}")
 
     def export_data(self):
-        if not self.data_points: self.status_var.set("Nada para exportar."); return
-        filepath = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv"), ("All files", "*.*")], title="Guardar Dados Como...")
-        if not filepath: self.status_var.set("Exportação dos dados cancelada."); return
+        if self.last_completed_test_id is None:
+            self.status_var.set("Nenhum teste concluído para exportar.")
+            self.log_message("WARN: Export data called with no completed test.")
+            return
+
+        test_data = self.data_handler.get_test_data(self.last_completed_test_id)
+        if not test_data:
+            self.status_var.set("Não foram encontrados dados para o último teste.")
+            self.log_message("WARN: No data found for the last test to export.")
+            return
+
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            title="Guardar Dados do Teste Como...",
+            initialfile=f"test_data_{self.last_completed_test_id}.csv"
+        )
+        if not filepath:
+            self.status_var.set("Exportação dos dados cancelada.")
+            return
+
         try:
             with open(filepath, 'w', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow(['Timestamp_s', 'Voltage_V', 'Current_mA'])
-                writer.writerows(self.data_points)
+                writer.writerows(test_data)
             self.status_var.set(f"Dados guardados em {filepath}")
-            self.log_message(f"INFO: Data saved to {filepath}")
-        except Exception as e: self.status_var.set(f"Erro ao guardar os dados: {e}"); self.log_message(f"ERROR: Failed to save data: {e}")
+            self.log_message(f"INFO: Data for test {self.last_completed_test_id} saved to {filepath}")
+        except Exception as e:
+            self.status_var.set(f"Erro ao guardar os dados: {e}")
+            self.log_message(f"ERROR: Failed to save data for test {self.last_completed_test_id}: {e}")
 
     def abort_process(self):
         if self.serial_handler.serial_connection and self.serial_handler.serial_connection.is_open and self.is_running:
@@ -369,6 +389,7 @@ class DepassivationApp:
                     self.pass_fail_label.config(text="N/A", style="TLabel")
 
                 self.data_handler.update_test_result(self.min_voltage, result)
+                self.last_completed_test_id = self.current_test_id
                 self.current_test_id = None
 
         elif data.startswith("DATA,"):
