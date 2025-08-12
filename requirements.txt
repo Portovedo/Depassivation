@@ -1,2 +1,2 @@
-pyserial
-matplotlib
+pyserial==3.5
+matplotlib==3.10.5

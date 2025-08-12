@@ -118,9 +118,17 @@ class DepassivationApp:
         self.history_tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.grid(row=0, column=1, sticky="ns")
 
-        # Refresh button
-        refresh_button = ttk.Button(list_frame, text="Atualizar Lista", command=self.populate_history_list)
-        refresh_button.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10,0))
+        # Button frame
+        button_frame = ttk.Frame(list_frame)
+        button_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10,0))
+        button_frame.column_configure(0, weight=1)
+        button_frame.column_configure(1, weight=1)
+
+        refresh_button = ttk.Button(button_frame, text="Atualizar Lista", command=self.populate_history_list)
+        refresh_button.grid(row=0, column=0, sticky="ew", padx=(0,2))
+
+        delete_button = ttk.Button(button_frame, text="Apagar Teste", command=self.delete_selected_test, style="danger.TButton")
+        delete_button.grid(row=0, column=1, sticky="ew", padx=(2,0))
 
         # Frame for the details of the selected test
         details_frame = ttk.LabelFrame(parent, text="Detalhes do Teste", padding="10")
@@ -326,6 +334,32 @@ class DepassivationApp:
                 self.log_message(f"INFO: Deleted profile '{profile_name}'.")
         else: messagebox.showwarning("Aviso", "Por favor, selecione um perfil válido para apagar.")
 
+    def delete_selected_test(self):
+        selection = self.history_tree.selection()
+        if not selection:
+            messagebox.showwarning("Nenhuma Seleção", "Por favor, selecione um teste da lista para apagar.")
+            return
+
+        selected_item = selection[0]
+        test_id = self.history_tree.item(selected_item, "values")[0]
+
+        if messagebox.askyesno("Confirmar Apagar", f"Tem a certeza que quer apagar permanentemente o teste ID {test_id}?"):
+            if self.data_handler.delete_test(test_id):
+                self.log_message(f"INFO: Teste ID {test_id} apagado com sucesso.")
+                self.populate_history_list()
+                # Clear details view
+                self.history_ax.cla()
+                self.history_canvas.draw()
+                self.history_id_label.config(text="ID do Teste: --")
+                self.history_timestamp_label.config(text="Data/Hora: --")
+                self.history_duration_label.config(text="Duração: -- s")
+                self.history_pass_fail_voltage_label.config(text="Tensão Alvo: -- V")
+                self.history_min_voltage_label.config(text="Tensão Mínima: -- V")
+                self.history_result_label.config(text="Resultado: --")
+            else:
+                messagebox.showerror("Erro", f"Não foi possível apagar o teste ID {test_id}.")
+                self.log_message(f"ERROR: Failed to delete test ID {test_id}.")
+
     def populate_history_list(self):
         # Clear existing items
         for item in self.history_tree.get_children():
@@ -347,7 +381,6 @@ class DepassivationApp:
         selected_item = selection[0]
         test_id = self.history_tree.item(selected_item, "values")[0]
 
-        # Fetch details from data_handler
         summary = self.data_handler.get_test_summary(test_id)
         data_points = self.data_handler.get_test_data(test_id)
 
@@ -355,7 +388,6 @@ class DepassivationApp:
             self.log_message(f"WARN: Não foram encontrados detalhes para o teste ID {test_id}.")
             return
 
-        # Update stats labels
         self.history_id_label.config(text=f"ID do Teste: {summary['id']}")
         self.history_timestamp_label.config(text=f"Data/Hora: {summary['timestamp']}")
         self.history_duration_label.config(text=f"Duração: {summary['duration']} s")
@@ -365,15 +397,11 @@ class DepassivationApp:
         result = summary['result']
         self.history_result_label.config(text=f"Resultado: {result if result else 'N/A'}")
 
-        # Update graph
         self.history_ax.cla()
         if data_points:
             times, voltages, _ = zip(*data_points)
             self.history_ax.plot(times, voltages, marker='o', linestyle='-')
-            min_v, max_v = min(voltages), max(voltages)
-            v_range = max_v - min_v
-            if v_range < 0.4: center = v_range / 2 + min_v; self.history_ax.set_ylim(center - 0.2, center + 0.2)
-            else: self.history_ax.set_ylim(min_v - 0.1, max_v + 0.1)
+            self._update_graph_yrange(self.history_ax, voltages)
 
         self.history_ax.set_title(f"Dados do Teste ID: {test_id}")
         self.history_ax.set_xlabel("Tempo (s)")
@@ -381,6 +409,18 @@ class DepassivationApp:
         self.history_ax.grid(True)
         self.history_fig.tight_layout()
         self.history_canvas.draw()
+
+    def _update_graph_yrange(self, axis, voltages):
+        """Calculates and sets the Y-axis limits for a graph."""
+        if not voltages:
+            return
+        min_v, max_v = min(voltages), max(voltages)
+        v_range = max_v - min_v
+        if v_range < 0.4:
+            center = v_range / 2 + min_v
+            axis.set_ylim(center - 0.2, center + 0.2)
+        else:
+            axis.set_ylim(min_v - 0.1, max_v + 0.1)
 
     def log_message(self, message):
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -437,13 +477,11 @@ class DepassivationApp:
 
     def update_graph(self):
         self.ax.cla()
-        if len(self.data_points) > 0:
+        if self.data_points:
             times, voltages, _ = zip(*self.data_points)
             self.ax.plot(times, voltages, marker='o', linestyle='-')
-            min_v, max_v = min(voltages), max(voltages)
-            v_range = max_v - min_v
-            if v_range < 0.4: center = v_range / 2 + min_v; self.ax.set_ylim(center - 0.2, center + 0.2)
-            else: self.ax.set_ylim(min_v - 0.1, max_v + 0.1)
+            self._update_graph_yrange(self.ax, voltages)
+
         self.ax.set_xlabel("Tempo (s)")
         self.ax.set_ylabel("Tensão (V)")
         self.ax.grid(True)
