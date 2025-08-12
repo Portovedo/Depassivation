@@ -10,11 +10,14 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from data_handler import DataHandler
-from serial_handler import SerialHandler
+# We will import the correct handler based on the mode
+# from serial_handler import SerialHandler
+# from simulation_handler import SimulationHandler
 
 class DepassivationApp:
-    def __init__(self, root):
+    def __init__(self, root, simulate=False):
         self.root = root
+        self.simulation_mode = simulate
         self.is_running = False
         self.current_test_id = None
         self.last_completed_test_id = None
@@ -23,10 +26,21 @@ class DepassivationApp:
         self.min_voltage = 0.0
 
         self.data_handler = DataHandler(self)
-        self.serial_handler = SerialHandler(self)
+
+        # --- MODE SWITCH ---
+        # Based on the --simulate flag, we instantiate either the real
+        # serial handler or the simulation handler.
+        if self.simulation_mode:
+            from simulation_handler import SimulationHandler
+            self.connection_handler = SimulationHandler(self)
+            self.root.title("Estação de Despassivação de Baterias (MODO SIMULAÇÃO)")
+        else:
+            from serial_handler import SerialHandler
+            self.connection_handler = SerialHandler(self)
+            self.root.title("Estação de Despassivação de Baterias")
+
 
         config = self.data_handler.load_config()
-        self.root.title("Estação de Despassivação de Baterias")
         self.root.geometry(config.get("geometry", "800x750"))
 
         self.duration_var = tk.StringVar(value=config.get("duration", "10"))
@@ -36,14 +50,21 @@ class DepassivationApp:
         self.selected_port_var = tk.StringVar(value=config.get("last_port", ""))
 
         self._setup_styles()
-        self._create_widgets() # Moved before clear_graph_and_stats
+        self._create_widgets()
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
-        self.clear_graph_and_stats() # Moved after _create_widgets
+        self.clear_graph_and_stats()
 
         self.profiles = self.data_handler.load_profiles()
         self._update_profile_dropdown()
-        self._refresh_port_list()
+        
+        if not self.simulation_mode:
+            self._refresh_port_list()
+        else:
+            # In simulation mode, the start button is always ready.
+            self.start_button.config(state=tk.NORMAL)
+            self.status_var.set("Modo Simulação: Pronto para iniciar o processo.")
+
         self.populate_history_list()
 
     def _setup_styles(self):
@@ -88,7 +109,10 @@ class DepassivationApp:
         self._create_status_bar()
 
     def _create_live_test_tab(self, parent):
-        self._create_connection_frame(parent)
+        # Only create the connection frame if not in simulation mode
+        if not self.simulation_mode:
+            self._create_connection_frame(parent)
+        
         self._create_graph_and_stats_frame(parent)
         self._create_control_frame(parent)
         self._create_settings_frame(parent)
@@ -203,7 +227,6 @@ class DepassivationApp:
         control_frame.grid(row=2, column=0, sticky="ew", pady=5)
         control_frame.columnconfigure(0, weight=1)
         
-        # --- Start/Abort Buttons ---
         button_frame = ttk.Frame(control_frame)
         button_frame.grid(row=0, column=0, sticky="ew")
         button_frame.columnconfigure(0, weight=1)
@@ -215,11 +238,9 @@ class DepassivationApp:
         self.abort_button = ttk.Button(button_frame, text="Abortar Processo", command=self.abort_process, state=tk.DISABLED, style='danger.TButton')
         self.abort_button.grid(row=0, column=1, sticky="ew", padx=(5,0))
         
-        # --- Progress Bar ---
         self.progressbar = ttk.Progressbar(control_frame, orient='horizontal', mode='determinate')
         self.progressbar.grid(row=1, column=0, sticky="ew", pady=(10,5))
         
-        # --- Export Buttons (FIXED) ---
         export_frame = ttk.Frame(control_frame)
         export_frame.grid(row=2, column=0, sticky="ew", pady=(5,0))
         export_frame.columnconfigure(0, weight=1)
@@ -269,7 +290,7 @@ class DepassivationApp:
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
     def _refresh_port_list(self):
-        ports = self.serial_handler.get_ports()
+        ports = self.connection_handler.get_ports()
         port_names = [port.device for port in ports]
         self.port_combobox['values'] = port_names
         last_port = self.selected_port_var.get()
@@ -283,24 +304,18 @@ class DepassivationApp:
         self.status_var.set("Pronto para conectar. Selecione uma porta e clique em Conectar.")
 
     def toggle_connection(self):
-        if self.serial_handler.serial_connection and self.serial_handler.serial_connection.is_open:
-            self.serial_handler.disconnect()
+        if self.connection_handler.serial_connection and self.connection_handler.serial_connection.is_open:
+            self.connection_handler.disconnect()
             self.connect_button.config(text="Conectar")
             self.start_button.config(state=tk.DISABLED)
             self.port_combobox.config(state='readonly')
             self.refresh_ports_button.config(state=tk.NORMAL)
-            self.status_var.set("Desconectado.")
         else:
-            port = self.selected_port_var.get()
-            if not port:
-                messagebox.showwarning("Nenhuma Porta", "Por favor, selecione uma porta serial para conectar.")
-                return
-            if self.serial_handler.connect(port):
+            if self.connection_handler.connect(self.selected_port_var.get()):
                 self.connect_button.config(text="Desconectar")
                 self.start_button.config(state=tk.NORMAL)
                 self.port_combobox.config(state=tk.DISABLED)
                 self.refresh_ports_button.config(state=tk.DISABLED)
-                self.status_var.set(f"Conectado a {port}")
 
     def _update_progressbar(self, duration):
         self.progressbar['maximum'] = duration * 10
@@ -323,9 +338,7 @@ class DepassivationApp:
         else:
             for name in profile_names:
                 menu.add_command(label=name, command=lambda value=name: self.selected_profile_var.set(value))
-            if self.selected_profile_var.get() not in profile_names:
-                self.selected_profile_var.set(profile_names[0])
-
+            if profile_names: self.selected_profile_var.set(profile_names[0])
 
     def save_profile(self):
         profile_name = self.profile_name_var.get().strip()
@@ -346,8 +359,6 @@ class DepassivationApp:
             profile = self.profiles[profile_name]
             self.duration_var.set(str(profile["duration"]))
             self.pass_fail_voltage_var.set(str(profile["voltage"]))
-            # --- CHANGE IMPLEMENTED ---
-            # Set the profile name in the entry box for easy re-saving
             self.profile_name_var.set(profile_name)
             self.status_var.set(f"Perfil '{profile_name}' carregado.")
             self.log_message(f"INFO: Loaded profile '{profile_name}'.")
@@ -377,7 +388,6 @@ class DepassivationApp:
             if self.data_handler.delete_test(test_id):
                 self.log_message(f"INFO: Teste ID {test_id} apagado com sucesso.")
                 self.populate_history_list()
-                # Clear details view
                 self.history_ax.cla()
                 self.history_canvas.draw()
                 self.history_id_label.config(text="ID do Teste: --")
@@ -385,17 +395,14 @@ class DepassivationApp:
                 self.history_duration_label.config(text="Duração: -- s")
                 self.history_pass_fail_voltage_label.config(text="Tensão Alvo: -- V")
                 self.history_min_voltage_label.config(text="Tensão Mínima: -- V")
-                self.history_result_label.config(text="Resultado: --", style="TLabel")
+                self.history_result_label.config(text="Resultado: --")
             else:
                 messagebox.showerror("Erro", f"Não foi possível apagar o teste ID {test_id}.")
                 self.log_message(f"ERROR: Failed to delete test ID {test_id}.")
 
     def populate_history_list(self):
-        # Clear existing items
         for item in self.history_tree.get_children():
             self.history_tree.delete(item)
-
-        # Fetch and insert new items
         test_summaries = self.data_handler.get_all_tests_summary()
         for test in test_summaries:
             test_id, timestamp, result = test
@@ -405,34 +412,27 @@ class DepassivationApp:
 
     def show_history_details(self, event):
         selection = self.history_tree.selection()
-        if not selection:
-            return
-
+        if not selection: return
         selected_item = selection[0]
         test_id = self.history_tree.item(selected_item, "values")[0]
-
         summary = self.data_handler.get_test_summary(test_id)
         data_points = self.data_handler.get_test_data(test_id)
-
         if not summary:
             self.log_message(f"WARN: Não foram encontrados detalhes para o teste ID {test_id}.")
             return
-
         self.history_id_label.config(text=f"ID do Teste: {summary['id']}")
         self.history_timestamp_label.config(text=f"Data/Hora: {summary['timestamp']}")
         self.history_duration_label.config(text=f"Duração: {summary['duration']} s")
         self.history_pass_fail_voltage_label.config(text=f"Tensão Alvo: {summary['pass_fail_voltage']} V")
         min_v = summary['min_voltage']
-        self.history_min_voltage_label.config(text=f"Tensão Mínima: {min_v:.3f} V" if min_v is not None else "N/A")
+        self.history_min_voltage_label.config(text=f"Tensão Mínima: {min_v:.3f} V" if min_v else "N/A")
         result = summary['result']
         self.history_result_label.config(text=f"Resultado: {result if result else 'N/A'}")
-
         self.history_ax.cla()
         if data_points:
             times, voltages, _ = zip(*data_points)
             self.history_ax.plot(times, voltages, marker='o', linestyle='-')
             self._update_graph_yrange(self.history_ax, voltages)
-
         self.history_ax.set_title(f"Dados do Teste ID: {test_id}")
         self.history_ax.set_xlabel("Tempo (s)")
         self.history_ax.set_ylabel("Tensão (V)")
@@ -441,9 +441,7 @@ class DepassivationApp:
         self.history_canvas.draw()
 
     def _update_graph_yrange(self, axis, voltages):
-        """Calculates and sets the Y-axis limits for a graph."""
-        if not voltages:
-            return
+        if not voltages: return
         min_v, max_v = min(voltages), max(voltages)
         v_range = max_v - min_v
         if v_range < 0.4:
@@ -460,33 +458,36 @@ class DepassivationApp:
         self.log_area.config(state=tk.DISABLED)
 
     def start_process(self):
-        if not (self.serial_handler.serial_connection and self.serial_handler.serial_connection.is_open):
-            self.log_message("ERROR: Not connected. Cannot start process.")
-            self.status_var.set("Erro: Não conectado ao dispositivo.")
-            return
         try:
             duration = int(self.duration_var.get())
-            if duration <= 0: raise ValueError("Duration must be positive.")
-        except ValueError: self.status_var.set("Erro: Duração do teste inválida."); return
-        try:
             pass_fail_voltage = float(self.pass_fail_voltage_var.get())
-            if pass_fail_voltage <= 0: raise ValueError("Voltage must be positive.")
-        except ValueError: self.status_var.set("Erro: Tensão de Passa/Falha inválida."); return
+            if duration <= 0 or pass_fail_voltage <= 0: raise ValueError("Values must be positive.")
+        except ValueError:
+            self.status_var.set("Erro: Duração e Tensão devem ser números positivos."); return
+
+        if not self.simulation_mode:
+            if not (self.connection_handler.serial_connection and self.connection_handler.serial_connection.is_open):
+                self.log_message("ERROR: Not connected. Cannot start process.")
+                self.status_var.set("Erro: Não conectado ao dispositivo.")
+                return
 
         self.clear_graph_and_stats()
-
         self.current_test_id = self.data_handler.create_new_test(duration, pass_fail_voltage)
         if not self.current_test_id:
             self.log_message("ERROR: Could not start test, database error.")
             return
 
-        command = f"START,{duration},{pass_fail_voltage}\n"
-        self.serial_handler.send(command)
-        self.log_message(f"INFO: Sent command to ESP32: {command.strip()}")
+        self.is_running = True
         self.start_button.config(state=tk.DISABLED)
         self.abort_button.config(state=tk.NORMAL)
-        self.is_running = True
         threading.Thread(target=self._update_progressbar, args=(duration,), daemon=True).start()
+
+        if self.simulation_mode:
+            self.connection_handler.start(duration, pass_fail_voltage)
+        else:
+            command = f"START,{duration},{pass_fail_voltage}\n"
+            self.connection_handler.send(command)
+            self.log_message(f"INFO: Sent command to ESP32: {command.strip()}")
 
     def clear_graph_and_stats(self):
         self.data_points.clear()
@@ -511,7 +512,6 @@ class DepassivationApp:
             times, voltages, _ = zip(*self.data_points)
             self.ax.plot(times, voltages, marker='o', linestyle='-')
             self._update_graph_yrange(self.ax, voltages)
-
         self.ax.set_xlabel("Tempo (s)")
         self.ax.set_ylabel("Tensão (V)")
         self.ax.grid(True)
@@ -533,23 +533,17 @@ class DepassivationApp:
             self.status_var.set("Nenhum teste concluído para exportar.")
             self.log_message("WARN: Export data called with no completed test.")
             return
-
         test_data = self.data_handler.get_test_data(self.last_completed_test_id)
         if not test_data:
             self.status_var.set("Não foram encontrados dados para o último teste.")
-            self.log_message("WARN: No data found for the last test to export.")
             return
-
         filepath = filedialog.asksaveasfilename(
             defaultextension=".csv",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
             title="Guardar Dados do Teste Como...",
             initialfile=f"test_data_{self.last_completed_test_id}.csv"
         )
-        if not filepath:
-            self.status_var.set("Exportação dos dados cancelada.")
-            return
-
+        if not filepath: self.status_var.set("Exportação dos dados cancelada."); return
         try:
             with open(filepath, 'w', newline='') as f:
                 writer = csv.writer(f)
@@ -562,25 +556,27 @@ class DepassivationApp:
             self.log_message(f"ERROR: Failed to save data for test {self.last_completed_test_id}: {e}")
 
     def abort_process(self):
-        if self.serial_handler.serial_connection and self.serial_handler.serial_connection.is_open and self.is_running:
-            self.serial_handler.send('ABORT\n')
-            self.is_running = False
-            self.log_message("INFO: Processo abortado pelo utilizador.")
-            self.abort_button.config(state=tk.DISABLED)
-            self.start_button.config(state=tk.NORMAL)
+        if not self.is_running: return
+        self.is_running = False
+        self.abort_button.config(state=tk.DISABLED)
+        self.start_button.config(state=tk.NORMAL)
+        
+        if self.simulation_mode:
+            self.connection_handler.abort()
+        else:
+            if self.connection_handler.serial_connection and self.connection_handler.serial_connection.is_open:
+                self.connection_handler.send('ABORT\n')
+                self.log_message("INFO: Processo abortado pelo utilizador.")
 
     def handle_disconnect(self):
-        # This method is called from the serial thread via root.after()
-        self.connect_button.config(text="Conectar")
+        self.status_var.set("Desconectado. Tente reiniciar a aplicação.")
+        self.connection_handler.disconnect()
         self.start_button.config(state=tk.DISABLED)
         self.abort_button.config(state=tk.DISABLED)
-        self.port_combobox.config(state='readonly')
-        self.refresh_ports_button.config(state=tk.NORMAL)
         self.is_running = False
-        self.status_var.set("Desconectado. Tente reiniciar a aplicação.")
 
     def handle_serial_data(self, data):
-        if not data.startswith("DATA,"): self.log_message(f"ESP32: {data}")
+        if not data.startswith("DATA,"): self.log_message(f"ESP32/SIM: {data}")
         if data.startswith("PROCESS_END"):
             self.is_running = False
             self.start_button.config(state=tk.NORMAL)
@@ -599,36 +595,24 @@ class DepassivationApp:
                         self.pass_fail_label.config(text="FAIL", style="fail.TLabel")
                 except ValueError:
                     self.pass_fail_label.config(text="N/A", style="TLabel")
-
                 self.data_handler.update_test_result(self.min_voltage, result)
                 self.last_completed_test_id = self.current_test_id
                 self.current_test_id = None
-                
-                # --- CHANGE IMPLEMENTED ---
-                # Automatically refresh the history list after a test completes
                 self.populate_history_list()
-
-
         elif data.startswith("DATA,"):
             try:
                 _, time_ms, voltage_v, current_ma = data.split(',')
                 time_s = float(time_ms) / 1000.0
                 voltage = float(voltage_v)
                 current = float(current_ma)
-
                 self.data_handler.log_data_point(int(time_ms), voltage, current)
-
-                # The data_points list is now just for the graph display
                 self.data_points.append((time_s, voltage, current))
-
                 self.voltage_label.config(text=f"Tensão Atual: {voltage:.3f} V")
                 self.current_label.config(text=f"Corrente Atual: {current:.1f} mA")
                 if self.min_voltage == 0.0 or voltage < self.min_voltage:
                     self.min_voltage = voltage
                     self.min_voltage_label.config(text=f"Tensão Mínima: {self.min_voltage:.3f} V")
-
                 self.update_graph()
-
             except (ValueError, IndexError) as e:
                 self.log_message(f"ERROR: Falha ao processar dados: {data} ({e})")
             except Exception as e:
@@ -637,5 +621,6 @@ class DepassivationApp:
     def on_closing(self):
         if self.is_running: self.abort_process()
         self.data_handler.save_config()
-        self.serial_handler.disconnect()
+        if not self.simulation_mode:
+            self.connection_handler.disconnect()
         self.root.destroy()
