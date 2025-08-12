@@ -44,6 +44,7 @@ class DepassivationApp:
         self.profiles = self.data_handler.load_profiles()
         self._update_profile_dropdown()
         self._refresh_port_list()
+        self.populate_history_list()
 
     def _setup_styles(self):
         style = ttk.Style(self.root)
@@ -57,21 +58,113 @@ class DepassivationApp:
         style.configure('fail.TLabel', background='red', foreground='white', font=('Helvetica', 16, 'bold'))
 
     def _create_widgets(self):
-        self.main_frame = ttk.Frame(self.root, padding="10")
-        self.main_frame.pack(fill=tk.BOTH, expand=True)
-        self.main_frame.grid_rowconfigure(1, weight=4)
-        self.main_frame.grid_rowconfigure(4, weight=1)
-        self.main_frame.grid_columnconfigure(0, weight=1)
+        # Main frame setup
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        main_frame.grid_columnconfigure(0, weight=1)
+        main_frame.grid_rowconfigure(0, weight=1)
 
-        self._create_connection_frame()
-        self._create_graph_and_stats_frame()
-        self._create_control_frame()
-        self._create_settings_frame()
-        self._create_log_frame()
+        # Notebook for tabs
+        self.notebook = ttk.Notebook(main_frame)
+        self.notebook.grid(row=0, column=0, sticky="nsew")
+        main_frame.grid_rowconfigure(0, weight=1)
+
+        # Create tabs
+        self.live_test_tab = ttk.Frame(self.notebook, padding="10")
+        self.history_tab = ttk.Frame(self.notebook, padding="10")
+        self.notebook.add(self.live_test_tab, text="Live Test")
+        self.notebook.add(self.history_tab, text="Histórico")
+
+        # Configure grid for live_test_tab
+        self.live_test_tab.grid_rowconfigure(1, weight=4)
+        self.live_test_tab.grid_rowconfigure(4, weight=1)
+        self.live_test_tab.grid_columnconfigure(0, weight=1)
+
+        # Populate tabs
+        self._create_live_test_tab(self.live_test_tab)
+        self._create_history_tab(self.history_tab)
+
+        # Status bar at the bottom
         self._create_status_bar()
 
-    def _create_connection_frame(self):
-        conn_frame = ttk.LabelFrame(self.main_frame, text="Conexão Serial", padding="10")
+    def _create_live_test_tab(self, parent):
+        self._create_connection_frame(parent)
+        self._create_graph_and_stats_frame(parent)
+        self._create_control_frame(parent)
+        self._create_settings_frame(parent)
+        self._create_log_frame(parent)
+
+    def _create_history_tab(self, parent):
+        parent.grid_columnconfigure(1, weight=3) # Details column
+        parent.grid_columnconfigure(0, weight=1) # List column
+        parent.grid_rowconfigure(0, weight=1)
+
+        # Frame for the list of tests
+        list_frame = ttk.LabelFrame(parent, text="Testes Anteriores", padding="10")
+        list_frame.grid(row=0, column=0, sticky="nswe", padx=(0, 5))
+        list_frame.row_configure(0, weight=1)
+        list_frame.column_configure(0, weight=1)
+
+        self.history_tree = ttk.Treeview(list_frame, columns=("ID", "Timestamp", "Result"), show="headings")
+        self.history_tree.heading("ID", text="ID")
+        self.history_tree.heading("Timestamp", text="Data e Hora")
+        self.history_tree.heading("Result", text="Resultado")
+        self.history_tree.column("ID", width=40, anchor='center')
+        self.history_tree.bind("<<TreeviewSelect>>", self.show_history_details)
+        self.history_tree.grid(row=0, column=0, sticky="nswe")
+
+        # Scrollbar for the Treeview
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.history_tree.yview)
+        self.history_tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        # Button frame
+        button_frame = ttk.Frame(list_frame)
+        button_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10,0))
+        button_frame.column_configure(0, weight=1)
+        button_frame.column_configure(1, weight=1)
+
+        refresh_button = ttk.Button(button_frame, text="Atualizar Lista", command=self.populate_history_list)
+        refresh_button.grid(row=0, column=0, sticky="ew", padx=(0,2))
+
+        delete_button = ttk.Button(button_frame, text="Apagar Teste", command=self.delete_selected_test, style="danger.TButton")
+        delete_button.grid(row=0, column=1, sticky="ew", padx=(2,0))
+
+        # Frame for the details of the selected test
+        details_frame = ttk.LabelFrame(parent, text="Detalhes do Teste", padding="10")
+        details_frame.grid(row=0, column=1, sticky="nswe", padx=(5, 0))
+        details_frame.grid_columnconfigure(0, weight=3) # Graph
+        details_frame.grid_columnconfigure(1, weight=1) # Stats
+        details_frame.grid_rowconfigure(0, weight=1)
+
+        # History Graph
+        history_graph_frame = ttk.LabelFrame(details_frame, text="Gráfico do Teste", padding="10")
+        history_graph_frame.grid(row=0, column=0, sticky="nswe", padx=(0, 5))
+        self.history_fig = Figure(figsize=(5, 4), dpi=100)
+        self.history_ax = self.history_fig.add_subplot(111)
+        self.history_canvas = FigureCanvasTkAgg(self.history_fig, master=history_graph_frame)
+        self.history_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        # History Stats
+        history_stats_frame = ttk.LabelFrame(details_frame, text="Métricas do Teste", padding="10")
+        history_stats_frame.grid(row=0, column=1, sticky="nswe", padx=(5, 0))
+
+        self.history_id_label = ttk.Label(history_stats_frame, text="ID do Teste: --")
+        self.history_id_label.pack(anchor="w", pady=2)
+        self.history_timestamp_label = ttk.Label(history_stats_frame, text="Data/Hora: --")
+        self.history_timestamp_label.pack(anchor="w", pady=2)
+        self.history_duration_label = ttk.Label(history_stats_frame, text="Duração: -- s")
+        self.history_duration_label.pack(anchor="w", pady=2)
+        self.history_pass_fail_voltage_label = ttk.Label(history_stats_frame, text="Tensão Alvo: -- V")
+        self.history_pass_fail_voltage_label.pack(anchor="w", pady=2)
+        self.history_min_voltage_label = ttk.Label(history_stats_frame, text="Tensão Mínima: -- V")
+        self.history_min_voltage_label.pack(anchor="w", pady=8)
+        self.history_result_label = ttk.Label(history_stats_frame, text="Resultado: --", font=("Helvetica", 14, "bold"))
+        self.history_result_label.pack(anchor="w", pady=8)
+
+
+    def _create_connection_frame(self, parent):
+        conn_frame = ttk.LabelFrame(parent, text="Conexão Serial", padding="10")
         conn_frame.grid(row=0, column=0, sticky="ew", pady=5)
         conn_frame.grid_columnconfigure(0, weight=1)
         self.port_combobox = ttk.Combobox(conn_frame, textvariable=self.selected_port_var, state='readonly')
@@ -81,8 +174,8 @@ class DepassivationApp:
         self.connect_button = ttk.Button(conn_frame, text="Conectar", command=self.toggle_connection)
         self.connect_button.grid(row=0, column=2, padx=5)
 
-    def _create_graph_and_stats_frame(self):
-        top_frame = ttk.Frame(self.main_frame)
+    def _create_graph_and_stats_frame(self, parent):
+        top_frame = ttk.Frame(parent)
         top_frame.grid(row=1, column=0, sticky="nsew", pady=5)
         top_frame.grid_columnconfigure(0, weight=3)
         top_frame.grid_columnconfigure(1, weight=1)
@@ -105,8 +198,8 @@ class DepassivationApp:
         self.pass_fail_label = ttk.Label(stats_frame, text="---", font=("Helvetica", 16, "bold"), anchor="center")
         self.pass_fail_label.pack(fill='x', expand=True, pady=5)
 
-    def _create_control_frame(self):
-        control_frame = ttk.LabelFrame(self.main_frame, text="Controlo e Exportação", padding="10")
+    def _create_control_frame(self, parent):
+        control_frame = ttk.LabelFrame(parent, text="Controlo e Exportação", padding="10")
         control_frame.grid(row=2, column=0, sticky="ew", pady=5)
         control_frame.column_configure(0, weight=1)
         button_frame = ttk.Frame(control_frame)
@@ -120,8 +213,8 @@ class DepassivationApp:
         self.progressbar = ttk.Progressbar(control_frame, orient='horizontal', mode='determinate')
         self.progressbar.grid(row=1, column=0, sticky="ew", pady=(10,0))
 
-    def _create_settings_frame(self):
-        settings_area_frame = ttk.Frame(self.main_frame)
+    def _create_settings_frame(self, parent):
+        settings_area_frame = ttk.Frame(parent)
         settings_area_frame.grid(row=3, column=0, sticky="ew", pady=5)
         settings_area_frame.grid_columnconfigure(0, weight=1)
         settings_area_frame.grid_columnconfigure(1, weight=1)
@@ -145,8 +238,8 @@ class DepassivationApp:
         ttk.Entry(profiles_frame, textvariable=self.profile_name_var).grid(row=3, column=0, columnspan=2, sticky="ew")
         ttk.Button(profiles_frame, text="Guardar", command=self.save_profile).grid(row=3, column=2, columnspan=2, padx=(5,0))
 
-    def _create_log_frame(self):
-        log_frame = ttk.LabelFrame(self.main_frame, text="Registo de Dados", padding="10")
+    def _create_log_frame(self, parent):
+        log_frame = ttk.LabelFrame(parent, text="Registo de Dados", padding="10")
         log_frame.grid(row=4, column=0, sticky="nsew")
         self.log_area = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, state=tk.DISABLED, font=("Courier New", 10), height=8)
         self.log_area.pack(fill=tk.BOTH, expand=True)
@@ -241,6 +334,94 @@ class DepassivationApp:
                 self.log_message(f"INFO: Deleted profile '{profile_name}'.")
         else: messagebox.showwarning("Aviso", "Por favor, selecione um perfil válido para apagar.")
 
+    def delete_selected_test(self):
+        selection = self.history_tree.selection()
+        if not selection:
+            messagebox.showwarning("Nenhuma Seleção", "Por favor, selecione um teste da lista para apagar.")
+            return
+
+        selected_item = selection[0]
+        test_id = self.history_tree.item(selected_item, "values")[0]
+
+        if messagebox.askyesno("Confirmar Apagar", f"Tem a certeza que quer apagar permanentemente o teste ID {test_id}?"):
+            if self.data_handler.delete_test(test_id):
+                self.log_message(f"INFO: Teste ID {test_id} apagado com sucesso.")
+                self.populate_history_list()
+                # Clear details view
+                self.history_ax.cla()
+                self.history_canvas.draw()
+                self.history_id_label.config(text="ID do Teste: --")
+                self.history_timestamp_label.config(text="Data/Hora: --")
+                self.history_duration_label.config(text="Duração: -- s")
+                self.history_pass_fail_voltage_label.config(text="Tensão Alvo: -- V")
+                self.history_min_voltage_label.config(text="Tensão Mínima: -- V")
+                self.history_result_label.config(text="Resultado: --")
+            else:
+                messagebox.showerror("Erro", f"Não foi possível apagar o teste ID {test_id}.")
+                self.log_message(f"ERROR: Failed to delete test ID {test_id}.")
+
+    def populate_history_list(self):
+        # Clear existing items
+        for item in self.history_tree.get_children():
+            self.history_tree.delete(item)
+
+        # Fetch and insert new items
+        test_summaries = self.data_handler.get_all_tests_summary()
+        for test in test_summaries:
+            test_id, timestamp, result = test
+            result_text = result if result else "Incompleto"
+            self.history_tree.insert("", tk.END, values=(test_id, timestamp, result_text))
+        self.log_message(f"INFO: Carregado {len(test_summaries)} testes no histórico.")
+
+    def show_history_details(self, event):
+        selection = self.history_tree.selection()
+        if not selection:
+            return
+
+        selected_item = selection[0]
+        test_id = self.history_tree.item(selected_item, "values")[0]
+
+        summary = self.data_handler.get_test_summary(test_id)
+        data_points = self.data_handler.get_test_data(test_id)
+
+        if not summary:
+            self.log_message(f"WARN: Não foram encontrados detalhes para o teste ID {test_id}.")
+            return
+
+        self.history_id_label.config(text=f"ID do Teste: {summary['id']}")
+        self.history_timestamp_label.config(text=f"Data/Hora: {summary['timestamp']}")
+        self.history_duration_label.config(text=f"Duração: {summary['duration']} s")
+        self.history_pass_fail_voltage_label.config(text=f"Tensão Alvo: {summary['pass_fail_voltage']} V")
+        min_v = summary['min_voltage']
+        self.history_min_voltage_label.config(text=f"Tensão Mínima: {min_v:.3f} V" if min_v else "N/A")
+        result = summary['result']
+        self.history_result_label.config(text=f"Resultado: {result if result else 'N/A'}")
+
+        self.history_ax.cla()
+        if data_points:
+            times, voltages, _ = zip(*data_points)
+            self.history_ax.plot(times, voltages, marker='o', linestyle='-')
+            self._update_graph_yrange(self.history_ax, voltages)
+
+        self.history_ax.set_title(f"Dados do Teste ID: {test_id}")
+        self.history_ax.set_xlabel("Tempo (s)")
+        self.history_ax.set_ylabel("Tensão (V)")
+        self.history_ax.grid(True)
+        self.history_fig.tight_layout()
+        self.history_canvas.draw()
+
+    def _update_graph_yrange(self, axis, voltages):
+        """Calculates and sets the Y-axis limits for a graph."""
+        if not voltages:
+            return
+        min_v, max_v = min(voltages), max(voltages)
+        v_range = max_v - min_v
+        if v_range < 0.4:
+            center = v_range / 2 + min_v
+            axis.set_ylim(center - 0.2, center + 0.2)
+        else:
+            axis.set_ylim(min_v - 0.1, max_v + 0.1)
+
     def log_message(self, message):
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.log_area.config(state=tk.NORMAL)
@@ -296,13 +477,11 @@ class DepassivationApp:
 
     def update_graph(self):
         self.ax.cla()
-        if len(self.data_points) > 0:
+        if self.data_points:
             times, voltages, _ = zip(*self.data_points)
             self.ax.plot(times, voltages, marker='o', linestyle='-')
-            min_v, max_v = min(voltages), max(voltages)
-            v_range = max_v - min_v
-            if v_range < 0.4: center = v_range / 2 + min_v; self.ax.set_ylim(center - 0.2, center + 0.2)
-            else: self.ax.set_ylim(min_v - 0.1, max_v + 0.1)
+            self._update_graph_yrange(self.ax, voltages)
+
         self.ax.set_xlabel("Tempo (s)")
         self.ax.set_ylabel("Tensão (V)")
         self.ax.grid(True)

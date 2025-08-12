@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime
 
 PROFILES_FILE = "profiles.json"
@@ -14,10 +15,28 @@ class DataHandler:
         self.current_test_id = None
         self._init_database()
 
-    def _init_database(self):
+    @contextmanager
+    def _get_db_cursor(self, commit=False, row_factory=None):
+        """A context manager for safely handling database connections."""
+        conn = None
         try:
             conn = sqlite3.connect(DB_FILE)
+            if row_factory:
+                conn.row_factory = row_factory
             cursor = conn.cursor()
+            yield cursor
+            if commit:
+                conn.commit()
+        except sqlite3.Error as e:
+            self.app.log_message(f"ERROR: Database error: {e}")
+            if conn:
+                conn.rollback()
+        finally:
+            if conn:
+                conn.close()
+
+    def _init_database(self):
+        with self._get_db_cursor(commit=True) as cursor:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS tests (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -35,91 +54,67 @@ class DataHandler:
                     timestamp_ms INTEGER NOT NULL,
                     voltage REAL NOT NULL,
                     current REAL NOT NULL,
-                    FOREIGN KEY (test_id) REFERENCES tests (id)
+                    FOREIGN KEY (test_id) REFERENCES tests (id) ON DELETE CASCADE
                 )
             """)
-            conn.commit()
-        except sqlite3.Error as e:
-            self.app.log_message(f"ERROR: Database error: {e}")
-        finally:
-            if conn:
-                conn.close()
 
     def create_new_test(self, duration, pass_fail_voltage):
-        try:
-            conn = sqlite3.connect(DB_FILE)
-            cursor = conn.cursor()
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            cursor.execute("""
-                INSERT INTO tests (timestamp, duration, pass_fail_voltage)
-                VALUES (?, ?, ?)
-            """, (timestamp, duration, pass_fail_voltage))
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        sql = "INSERT INTO tests (timestamp, duration, pass_fail_voltage) VALUES (?, ?, ?)"
+
+        with self._get_db_cursor(commit=True) as cursor:
+            cursor.execute(sql, (timestamp, duration, pass_fail_voltage))
             self.current_test_id = cursor.lastrowid
-            conn.commit()
             self.app.log_message(f"INFO: Started new test with ID: {self.current_test_id}")
             return self.current_test_id
-        except sqlite3.Error as e:
-            self.app.log_message(f"ERROR: Could not create new test in database: {e}")
-            return None
-        finally:
-            if conn:
-                conn.close()
+        return None
 
     def log_data_point(self, timestamp_ms, voltage, current):
         if self.current_test_id is None:
             return
-        try:
-            conn = sqlite3.connect(DB_FILE)
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO data_points (test_id, timestamp_ms, voltage, current)
-                VALUES (?, ?, ?, ?)
-            """, (self.current_test_id, timestamp_ms, voltage, current))
-            conn.commit()
-        except sqlite3.Error as e:
-            self.app.log_message(f"ERROR: Could not log data point to database: {e}")
-        finally:
-            if conn:
-                conn.close()
+        sql = "INSERT INTO data_points (test_id, timestamp_ms, voltage, current) VALUES (?, ?, ?, ?)"
+        with self._get_db_cursor(commit=True) as cursor:
+            cursor.execute(sql, (self.current_test_id, timestamp_ms, voltage, current))
 
     def update_test_result(self, min_voltage, result):
         if self.current_test_id is None:
             return
-        try:
-            conn = sqlite3.connect(DB_FILE)
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE tests
-                SET min_voltage = ?, result = ?
-                WHERE id = ?
-            """, (min_voltage, result, self.current_test_id))
-            conn.commit()
-        except sqlite3.Error as e:
-            self.app.log_message(f"ERROR: Could not update test result in database: {e}")
-        finally:
-            if conn:
-                conn.close()
+        sql = "UPDATE tests SET min_voltage = ?, result = ? WHERE id = ?"
+        with self._get_db_cursor(commit=True) as cursor:
+            cursor.execute(sql, (min_voltage, result, self.current_test_id))
 
     def get_test_data(self, test_id):
-        if test_id is None:
-            return []
-        try:
-            conn = sqlite3.connect(DB_FILE)
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT timestamp_ms, voltage, current FROM data_points
-                WHERE test_id = ?
-                ORDER BY timestamp_ms ASC
-            """, (test_id,))
+        if test_id is None: return []
+        sql = "SELECT timestamp_ms, voltage, current FROM data_points WHERE test_id = ? ORDER BY timestamp_ms ASC"
+        with self._get_db_cursor() as cursor:
+            cursor.execute(sql, (test_id,))
             data = cursor.fetchall()
-            # Convert from (timestamp_ms, V, A) to (timestamp_s, V, A) for CSV
             return [(ts / 1000.0, v, c) for ts, v, c in data]
-        except sqlite3.Error as e:
-            self.app.log_message(f"ERROR: Could not fetch test data from database: {e}")
-            return []
-        finally:
-            if conn:
-                conn.close()
+        return []
+
+    def get_all_tests_summary(self):
+        sql = "SELECT id, timestamp, result FROM tests ORDER BY timestamp DESC"
+        with self._get_db_cursor() as cursor:
+            cursor.execute(sql)
+            return cursor.fetchall()
+        return []
+
+    def get_test_summary(self, test_id):
+        if test_id is None: return None
+        sql = "SELECT * FROM tests WHERE id = ?"
+        with self._get_db_cursor(row_factory=sqlite3.Row) as cursor:
+            cursor.execute(sql, (test_id,))
+            return cursor.fetchone()
+        return None
+
+    def delete_test(self, test_id):
+        if test_id is None: return False
+        sql = "DELETE FROM tests WHERE id = ?"
+        with self._get_db_cursor(commit=True) as cursor:
+            cursor.execute(sql, (test_id,))
+            # The ON DELETE CASCADE will handle the data_points table
+            return cursor.rowcount > 0
+        return False
 
     def load_profiles(self):
         if os.path.exists(PROFILES_FILE):
