@@ -36,10 +36,10 @@ class DepassivationApp:
         self.selected_port_var = tk.StringVar(value=config.get("last_port", ""))
 
         self._setup_styles()
-        self._create_widgets()
+        self._create_widgets() # Moved before clear_graph_and_stats
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
-        self.clear_graph_and_stats()
+        self.clear_graph_and_stats() # Moved after _create_widgets
 
         self.profiles = self.data_handler.load_profiles()
         self._update_profile_dropdown()
@@ -102,8 +102,8 @@ class DepassivationApp:
         # Frame for the list of tests
         list_frame = ttk.LabelFrame(parent, text="Testes Anteriores", padding="10")
         list_frame.grid(row=0, column=0, sticky="nswe", padx=(0, 5))
-        list_frame.row_configure(0, weight=1)
-        list_frame.column_configure(0, weight=1)
+        list_frame.rowconfigure(0, weight=1)
+        list_frame.columnconfigure(0, weight=1)
 
         self.history_tree = ttk.Treeview(list_frame, columns=("ID", "Timestamp", "Result"), show="headings")
         self.history_tree.heading("ID", text="ID")
@@ -121,8 +121,8 @@ class DepassivationApp:
         # Button frame
         button_frame = ttk.Frame(list_frame)
         button_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10,0))
-        button_frame.column_configure(0, weight=1)
-        button_frame.column_configure(1, weight=1)
+        button_frame.columnconfigure(0, weight=1)
+        button_frame.columnconfigure(1, weight=1)
 
         refresh_button = ttk.Button(button_frame, text="Atualizar Lista", command=self.populate_history_list)
         refresh_button.grid(row=0, column=0, sticky="ew", padx=(0,2))
@@ -201,17 +201,36 @@ class DepassivationApp:
     def _create_control_frame(self, parent):
         control_frame = ttk.LabelFrame(parent, text="Controlo e Exportação", padding="10")
         control_frame.grid(row=2, column=0, sticky="ew", pady=5)
-        control_frame.column_configure(0, weight=1)
+        control_frame.columnconfigure(0, weight=1)
+        
+        # --- Start/Abort Buttons ---
         button_frame = ttk.Frame(control_frame)
         button_frame.grid(row=0, column=0, sticky="ew")
-        button_frame.column_configure(0, weight=1)
-        button_frame.column_configure(1, weight=1)
+        button_frame.columnconfigure(0, weight=1)
+        button_frame.columnconfigure(1, weight=1)
+        
         self.start_button = ttk.Button(button_frame, text="Iniciar Processo", command=self.start_process, style='success.TButton', state=tk.DISABLED)
         self.start_button.grid(row=0, column=0, sticky="ew", padx=(0,5))
+        
         self.abort_button = ttk.Button(button_frame, text="Abortar Processo", command=self.abort_process, state=tk.DISABLED, style='danger.TButton')
         self.abort_button.grid(row=0, column=1, sticky="ew", padx=(5,0))
+        
+        # --- Progress Bar ---
         self.progressbar = ttk.Progressbar(control_frame, orient='horizontal', mode='determinate')
-        self.progressbar.grid(row=1, column=0, sticky="ew", pady=(10,0))
+        self.progressbar.grid(row=1, column=0, sticky="ew", pady=(10,5))
+        
+        # --- Export Buttons (FIXED) ---
+        export_frame = ttk.Frame(control_frame)
+        export_frame.grid(row=2, column=0, sticky="ew", pady=(5,0))
+        export_frame.columnconfigure(0, weight=1)
+        export_frame.columnconfigure(1, weight=1)
+
+        self.export_graph_button = ttk.Button(export_frame, text="Exportar Gráfico (.png)", command=self.export_graph, state=tk.DISABLED)
+        self.export_graph_button.grid(row=0, column=0, sticky="ew", padx=(0,5))
+        
+        self.export_data_button = ttk.Button(export_frame, text="Exportar Dados (.csv)", command=self.export_data, state=tk.DISABLED)
+        self.export_data_button.grid(row=0, column=1, sticky="ew", padx=(5,0))
+
 
     def _create_settings_frame(self, parent):
         settings_area_frame = ttk.Frame(parent)
@@ -270,12 +289,18 @@ class DepassivationApp:
             self.start_button.config(state=tk.DISABLED)
             self.port_combobox.config(state='readonly')
             self.refresh_ports_button.config(state=tk.NORMAL)
+            self.status_var.set("Desconectado.")
         else:
-            if self.serial_handler.connect(self.selected_port_var.get()):
+            port = self.selected_port_var.get()
+            if not port:
+                messagebox.showwarning("Nenhuma Porta", "Por favor, selecione uma porta serial para conectar.")
+                return
+            if self.serial_handler.connect(port):
                 self.connect_button.config(text="Desconectar")
                 self.start_button.config(state=tk.NORMAL)
                 self.port_combobox.config(state=tk.DISABLED)
                 self.refresh_ports_button.config(state=tk.DISABLED)
+                self.status_var.set(f"Conectado a {port}")
 
     def _update_progressbar(self, duration):
         self.progressbar['maximum'] = duration * 10
@@ -298,7 +323,9 @@ class DepassivationApp:
         else:
             for name in profile_names:
                 menu.add_command(label=name, command=lambda value=name: self.selected_profile_var.set(value))
-            if profile_names: self.selected_profile_var.set(profile_names[0])
+            if self.selected_profile_var.get() not in profile_names:
+                self.selected_profile_var.set(profile_names[0])
+
 
     def save_profile(self):
         profile_name = self.profile_name_var.get().strip()
@@ -319,6 +346,9 @@ class DepassivationApp:
             profile = self.profiles[profile_name]
             self.duration_var.set(str(profile["duration"]))
             self.pass_fail_voltage_var.set(str(profile["voltage"]))
+            # --- CHANGE IMPLEMENTED ---
+            # Set the profile name in the entry box for easy re-saving
+            self.profile_name_var.set(profile_name)
             self.status_var.set(f"Perfil '{profile_name}' carregado.")
             self.log_message(f"INFO: Loaded profile '{profile_name}'.")
         else: messagebox.showwarning("Aviso", "Por favor, selecione um perfil válido para carregar.")
@@ -355,7 +385,7 @@ class DepassivationApp:
                 self.history_duration_label.config(text="Duração: -- s")
                 self.history_pass_fail_voltage_label.config(text="Tensão Alvo: -- V")
                 self.history_min_voltage_label.config(text="Tensão Mínima: -- V")
-                self.history_result_label.config(text="Resultado: --")
+                self.history_result_label.config(text="Resultado: --", style="TLabel")
             else:
                 messagebox.showerror("Erro", f"Não foi possível apagar o teste ID {test_id}.")
                 self.log_message(f"ERROR: Failed to delete test ID {test_id}.")
@@ -393,7 +423,7 @@ class DepassivationApp:
         self.history_duration_label.config(text=f"Duração: {summary['duration']} s")
         self.history_pass_fail_voltage_label.config(text=f"Tensão Alvo: {summary['pass_fail_voltage']} V")
         min_v = summary['min_voltage']
-        self.history_min_voltage_label.config(text=f"Tensão Mínima: {min_v:.3f} V" if min_v else "N/A")
+        self.history_min_voltage_label.config(text=f"Tensão Mínima: {min_v:.3f} V" if min_v is not None else "N/A")
         result = summary['result']
         self.history_result_label.config(text=f"Resultado: {result if result else 'N/A'}")
 
@@ -540,11 +570,14 @@ class DepassivationApp:
             self.start_button.config(state=tk.NORMAL)
 
     def handle_disconnect(self):
-        self.status_var.set("Desconectado. Tente reiniciar a aplicação.")
-        self.serial_handler.disconnect()
+        # This method is called from the serial thread via root.after()
+        self.connect_button.config(text="Conectar")
         self.start_button.config(state=tk.DISABLED)
         self.abort_button.config(state=tk.DISABLED)
+        self.port_combobox.config(state='readonly')
+        self.refresh_ports_button.config(state=tk.NORMAL)
         self.is_running = False
+        self.status_var.set("Desconectado. Tente reiniciar a aplicação.")
 
     def handle_serial_data(self, data):
         if not data.startswith("DATA,"): self.log_message(f"ESP32: {data}")
@@ -570,6 +603,11 @@ class DepassivationApp:
                 self.data_handler.update_test_result(self.min_voltage, result)
                 self.last_completed_test_id = self.current_test_id
                 self.current_test_id = None
+                
+                # --- CHANGE IMPLEMENTED ---
+                # Automatically refresh the history list after a test completes
+                self.populate_history_list()
+
 
         elif data.startswith("DATA,"):
             try:
