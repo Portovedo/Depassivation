@@ -72,3 +72,6 @@ class SerialHandler:
                 self.app.log_message(f"ERROR: Falha ao enviar dados: {e}")
                 return False
         return False
+
+    def is_connected(self):
+        return self.serial_connection is not None and self.serial_connection.is_open
