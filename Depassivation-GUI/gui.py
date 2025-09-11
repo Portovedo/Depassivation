@@ -131,6 +131,10 @@ class DepassivationApp:
         self.max_current = 0.0
         self.power = 0.0
         self.resistance = 0.0
+        self.live_min_voltage = 0.0
+        self.live_max_current = 0.0
+        self.live_min_resistance = 0.0
+        self.live_max_resistance = 0.0
 
         if self.simulation_mode:
             from simulation_handler import SimulationHandler
@@ -176,6 +180,7 @@ class DepassivationApp:
         style.map('warning.TButton', background=[('active', '#fb8c00')])
         style.configure('pass.TLabel', background='green', foreground='white', font=('Helvetica', 16, 'bold'))
         style.configure('fail.TLabel', background='red', foreground='white', font=('Helvetica', 16, 'bold'))
+        style.configure("blue.Horizontal.TProgressbar", background='#007BFF')
 
     def _create_widgets(self):
         main_frame = ttk.Frame(self.root, padding="10")
@@ -209,7 +214,7 @@ class DepassivationApp:
         progress_frame = ttk.LabelFrame(parent, text="Test Progress", padding="10")
         progress_frame.grid(row=1, column=0, sticky="ew", pady=(5,0))
         progress_frame.columnconfigure(0, weight=1)
-        self.test_progress_bar = ttk.Progressbar(progress_frame, orient='horizontal', mode='determinate')
+        self.test_progress_bar = ttk.Progressbar(progress_frame, orient='horizontal', mode='determinate', style="blue.Horizontal.TProgressbar")
         self.test_progress_bar.grid(row=0, column=0, sticky="ew")
         self.cycle_label = ttk.Label(progress_frame, text="Current Cycle: --")
         self.cycle_label.grid(row=1, column=0, sticky="w", pady=(5,0))
@@ -346,21 +351,39 @@ class DepassivationApp:
     def _create_live_view_widgets(self, parent):
         frame = ttk.Frame(parent, padding=10)
         frame.columnconfigure(0, weight=1)
+        frame.columnconfigure(1, weight=1)
         frame.rowconfigure(0, weight=1)
-        live_frame = ttk.LabelFrame(frame, text="Live Measurement Mode", padding=20)
-        live_frame.grid(sticky="nsew")
+
+        # --- Live Readings Frame ---
+        live_frame = ttk.LabelFrame(frame, text="Live Measurement", padding=20)
+        live_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
         live_frame.columnconfigure(0, weight=1)
+
         self.live_voltage_label = ttk.Label(live_frame, text="Voltage: -- V", font=("Helvetica", 20))
-        self.live_voltage_label.pack(pady=10)
+        self.live_voltage_label.pack(pady=5)
         self.live_current_label = ttk.Label(live_frame, text="Current: -- mA", font=("Helvetica", 20))
-        self.live_current_label.pack(pady=10)
+        self.live_current_label.pack(pady=5)
         self.live_power_label = ttk.Label(live_frame, text="Power: -- mW", font=("Helvetica", 20))
-        self.live_power_label.pack(pady=10)
+        self.live_power_label.pack(pady=5)
         self.live_resistance_label = ttk.Label(live_frame, text="Resistance: -- Ω", font=("Helvetica", 20))
-        self.live_resistance_label.pack(pady=10)
+        self.live_resistance_label.pack(pady=5)
         self.mosfet_button = ttk.Button(live_frame, text="Activate Load", command=self.toggle_mosfet)
-        self.mosfet_button.pack(pady=20, ipadx=10, ipady=5)
+        self.mosfet_button.pack(pady=20, ipadx=10, ipady=5, side='bottom')
         self.mosfet_on = False
+
+        # --- Live Statistics Frame ---
+        stats_frame = ttk.LabelFrame(frame, text="Live Statistics", padding=20)
+        stats_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+
+        self.live_min_v_label = ttk.Label(stats_frame, text="Min Voltage: -- V", font=("Helvetica", 12))
+        self.live_min_v_label.pack(anchor='w', pady=4)
+        self.live_max_c_label = ttk.Label(stats_frame, text="Max Current: -- mA", font=("Helvetica", 12))
+        self.live_max_c_label.pack(anchor='w', pady=4)
+        self.live_min_r_label = ttk.Label(stats_frame, text="Min Resistance: -- Ω", font=("Helvetica", 12))
+        self.live_min_r_label.pack(anchor='w', pady=4)
+        self.live_max_r_label = ttk.Label(stats_frame, text="Max Resistance: -- Ω", font=("Helvetica", 12))
+        self.live_max_r_label.pack(anchor='w', pady=4)
+
         return frame
 
     def show_frame(self, mode):
@@ -505,22 +528,40 @@ class DepassivationApp:
         self.on_battery_selected(None)
         self.populate_battery_history_list()
 
-    def on_battery_selected(self, event):
+    def on_battery_selected(self, event=None):
         selected_name = self.selected_battery_var.get()
         battery = next((b for b in self.batteries if b['name'] == selected_name), None)
         is_ready = (self.connection_handler and self.connection_handler.is_connected()) or self.simulation_mode
 
+        # Disable all buttons by default
+        if hasattr(self, 'baseline_button'):
+            self.baseline_button.config(state=tk.DISABLED)
+            self.depassivation_button.config(state=tk.DISABLED)
+            self.check_button.config(state=tk.DISABLED)
+
         if battery and is_ready:
             self.selected_battery_id = battery['id']
-            self.baseline_button.config(state=tk.NORMAL)
-            self.depassivation_button.config(state=tk.NORMAL)
-            self.check_button.config(state=tk.NORMAL)
+            last_test = self.data_handler.get_last_test_for_battery(self.selected_battery_id)
+
+            if not last_test:
+                # No tests yet, only baseline is allowed.
+                self.baseline_button.config(state=tk.NORMAL)
+            else:
+                result_text = last_test['result'] or ""
+                if "Baseline Test" in result_text:
+                    # After baseline, only depassivation is allowed.
+                    self.depassivation_button.config(state=tk.NORMAL)
+                elif "Depassivation Cycle" in result_text:
+                    # After depassivation, only check is allowed.
+                    self.check_button.config(state=tk.NORMAL)
+                elif "Depassivation Check" in result_text:
+                    # After a full sequence, a new baseline can be started.
+                    self.baseline_button.config(state=tk.NORMAL)
+                else:
+                    # For any other case (e.g., incomplete, aborted), start fresh with a baseline.
+                    self.baseline_button.config(state=tk.NORMAL)
         else:
             self.selected_battery_id = None
-            if hasattr(self, 'baseline_button'):
-                self.baseline_button.config(state=tk.DISABLED)
-                self.depassivation_button.config(state=tk.DISABLED)
-                self.check_button.config(state=tk.DISABLED)
 
     def start_baseline_test(self):
         duration = int(self.baseline_duration_var.get())
@@ -576,13 +617,24 @@ class DepassivationApp:
     def toggle_mosfet(self):
         self.mosfet_on = not self.mosfet_on
         self.connection_handler.send(f"SET_MOSFET,{1 if self.mosfet_on else 0}\n")
+
         if self.mosfet_on:
+            # Reset stats when activating load
+            self.live_min_voltage = 0.0
+            self.live_max_current = 0.0
+            self.live_min_resistance = 0.0
+            self.live_max_resistance = 0.0
+            self.live_min_v_label.config(text="Min Voltage: -- V")
+            self.live_max_c_label.config(text="Max Current: -- mA")
+            self.live_min_r_label.config(text="Min Resistance: -- Ω")
+            self.live_max_r_label.config(text="Max Resistance: -- Ω")
             self.mosfet_button.config(text="Deactivate Load", style="warning.TButton")
         else:
             self.mosfet_button.config(text="Activate Load", style="TButton")
-            self.live_current_label.config(text="Current: --")
-            self.live_power_label.config(text="Power: --")
-            self.live_resistance_label.config(text="Resistance: --")
+            # Clear transient readings
+            self.live_current_label.config(text="Current: -- mA")
+            self.live_power_label.config(text="Power: -- mW")
+            self.live_resistance_label.config(text="Resistance: -- Ω")
 
     def _refresh_port_list(self):
         ports = self.connection_handler.get_ports()
@@ -740,12 +792,31 @@ class DepassivationApp:
             # Physical buttons are not tied to specific tests in this UI version
         elif data.startswith("LIVE_DATA"):
             try:
-                _, v, c, p, r = data.split(',')
-                self.live_voltage_label.config(text=f"Voltage: {float(v):.3f} V")
+                _, v_str, c_str, p_str, r_str = data.split(',')
+                v = float(v_str)
+                self.live_voltage_label.config(text=f"Voltage: {v:.3f} V")
+
                 if self.mosfet_on:
-                    self.live_current_label.config(text=f"Current: {float(c):.1f} mA")
-                    self.live_power_label.config(text=f"Power: {float(p):.1f} mW")
-                    self.live_resistance_label.config(text=f"Resistance: {float(r):.2f} Ω")
+                    c = float(c_str)
+                    p = float(p_str)
+                    r = float(r_str)
+                    self.live_current_label.config(text=f"Current: {c:.1f} mA")
+                    self.live_power_label.config(text=f"Power: {p:.1f} mW")
+                    self.live_resistance_label.config(text=f"Resistance: {r:.2f} Ω")
+
+                    if self.live_min_voltage == 0.0 or v < self.live_min_voltage:
+                        self.live_min_voltage = v
+                        self.live_min_v_label.config(text=f"Min Voltage: {v:.3f} V")
+                    if c > self.live_max_current:
+                        self.live_max_current = c
+                        self.live_max_c_label.config(text=f"Max Current: {c:.1f} mA")
+                    if r > 0:
+                        if self.live_min_resistance == 0.0 or r < self.live_min_resistance:
+                            self.live_min_resistance = r
+                            self.live_min_r_label.config(text=f"Min Resistance: {r:.2f} Ω")
+                        if r > self.live_max_resistance:
+                            self.live_max_resistance = r
+                            self.live_max_r_label.config(text=f"Max Resistance: {r:.2f} Ω")
             except (ValueError, IndexError): pass
         elif data.startswith("PROCESS_END"):
             self.is_running = False
@@ -904,47 +975,46 @@ class DepassivationApp:
         self.selected_history_test_id = None # Not a single test
         self.history_graph_view = 'comparison'
         self._plot_sequence_graph()
+        self.graph_toggle_button.config(text="Show Check Cycle (3)")
         self.graph_toggle_button.pack(pady=(5,0), fill='x')
 
         s1 = self.data_handler.get_test_summary(sequence_info['baseline']['id'])
-        s3 = self.data_handler.get_test_summary(sequence_info['check']['id'])
+        s2 = self.data_handler.get_test_summary(sequence_info['depassivation']['id'])
+
+        # Update the labels in the comparison table header
+        ttk.Label(self.history_comparison_frame, text="Baseline (1)", font=('Helvetica', 10, 'bold')).grid(row=0, column=1, padx=5, pady=2, sticky='w')
+        ttk.Label(self.history_comparison_frame, text="Depassivation (2)", font=('Helvetica', 10, 'bold')).grid(row=0, column=2, padx=5, pady=2, sticky='w')
 
         metrics = ["min_voltage", "max_current", "resistance"]
         formats = [".3f", ".1f", ".2f"]
         units = ["V", "mA", "Ω"]
-        all_changes = []
 
         for i, metric in enumerate(metrics):
             val1 = s1.get(metric) if s1 else None
-            val3 = s3.get(metric) if s3 else None
+            val2 = s2.get(metric) if s2 else None
 
             self.comparison_labels[f'baseline_{metric}'].config(text=f"{val1:{formats[i]}} {units[i]}" if val1 is not None else "--")
-            self.comparison_labels[f'check_{metric}'].config(text=f"{val3:{formats[i]}} {units[i]}" if val3 is not None else "--")
+            self.comparison_labels[f'check_{metric}'].config(text=f"{val2:{formats[i]}} {units[i]}" if val2 is not None else "--") # Re-using 'check' label for 2nd cycle
 
-            if val1 is not None and val3 is not None:
-                change = val3 - val1
+            if val1 is not None and val2 is not None:
+                change = val2 - val1
                 percent_change = (change / val1 * 100) if val1 != 0 else 0
                 sign = "+" if change > 0 else ""
                 self.comparison_labels[f'change_{metric}'].config(text=f"{sign}{change:{formats[i]}} ({sign}{percent_change:.1f}%)")
-                all_changes.append(percent_change if metric != "resistance" else -percent_change)
             else:
                  self.comparison_labels[f'change_{metric}'].config(text="--")
 
-        if all_changes and all(c > -5 for c in all_changes): # Allow small negative change
-             summary_text = "SUCCESS: Battery characteristics improved."
-        else:
-             summary_text = "INFO: Significant improvement not detected."
-        self.comparison_summary_label.config(text=summary_text)
+        self.comparison_summary_label.config(text=f"Rest time before Check cycle: {sequence_info.get('rest_time', 'N/A')}")
 
     def toggle_history_graph_view(self):
         if not self.current_sequence_info: return
 
         if self.history_graph_view == 'comparison':
-            self.history_graph_view = 'depassivation'
-            self.graph_toggle_button.config(text="Show Comparison Graph")
+            self.history_graph_view = 'check'
+            self.graph_toggle_button.config(text="Show Comparison Graph (1 vs 2)")
         else:
             self.history_graph_view = 'comparison'
-            self.graph_toggle_button.config(text="Show Depassivation Cycle")
+            self.graph_toggle_button.config(text="Show Check Cycle (3)")
         self._plot_sequence_graph()
 
     def _plot_sequence_graph(self):
@@ -954,29 +1024,29 @@ class DepassivationApp:
         if self.history_graph_view == 'comparison':
             s1 = self.data_handler.get_test_summary(self.current_sequence_info['baseline']['id'])
             d1 = self.data_handler.get_test_data(s1['id'])
-            s3 = self.data_handler.get_test_summary(self.current_sequence_info['check']['id'])
-            d3 = self.data_handler.get_test_data(s3['id'])
+            s2 = self.data_handler.get_test_summary(self.current_sequence_info['depassivation']['id'])
+            d2 = self.data_handler.get_test_data(s2['id'])
 
             if d1:
                 t, v, _ = zip(*d1)
                 self.history_ax.plot(t, v, marker='.', linestyle='-', label=f"Baseline (ID: {s1['id']})")
-            if d3:
-                t, v, _ = zip(*d3)
-                self.history_ax.plot(t, v, marker='.', linestyle='-', label=f"Check (ID: {s3['id']})")
-
-            self.history_ax.set_title("Sequence: Baseline vs. Check")
-            self.history_ax.legend()
-            self.history_ax.set_xlim(0, max(s1['duration'], s3['duration']))
-
-        else: # 'depassivation' view
-            s2 = self.data_handler.get_test_summary(self.current_sequence_info['depassivation']['id'])
-            d2 = self.data_handler.get_test_data(s2['id'])
             if d2:
                 t, v, _ = zip(*d2)
-                self.history_ax.plot(t, v, marker='.', linestyle='-', color='green', label=f"Depassivation (ID: {s2['id']})")
-            self.history_ax.set_title(f"Sequence: Depassivation Cycle (ID: {s2['id']})")
+                self.history_ax.plot(t, v, marker='.', linestyle='-', label=f"Depassivation (ID: {s2['id']})")
+
+            self.history_ax.set_title("Sequence: Baseline vs. Depassivation")
             self.history_ax.legend()
-            self.history_ax.set_xlim(0, s2['duration'])
+            self.history_ax.set_xlim(0, max(s1['duration'], s2['duration']))
+
+        else: # 'check' view
+            s3 = self.data_handler.get_test_summary(self.current_sequence_info['check']['id'])
+            d3 = self.data_handler.get_test_data(s3['id'])
+            if d3:
+                t, v, _ = zip(*d3)
+                self.history_ax.plot(t, v, marker='.', linestyle='-', color='green', label=f"Check (ID: {s3['id']})")
+            self.history_ax.set_title(f"Sequence: Check Cycle (ID: {s3['id']})")
+            self.history_ax.legend()
+            self.history_ax.set_xlim(0, s3['duration'])
 
         self.history_ax.set_xlabel("Time (s)")
         self.history_ax.set_ylabel("Voltage (V)")

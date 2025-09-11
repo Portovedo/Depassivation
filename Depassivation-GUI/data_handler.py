@@ -182,6 +182,15 @@ class DataHandler:
             return cursor.fetchall()
         return []
 
+    def get_last_test_for_battery(self, battery_id):
+        """Fetches the most recent test for a specific battery ID."""
+        if battery_id is None: return None
+        sql = "SELECT id, timestamp, result, duration FROM tests WHERE battery_id = ? ORDER BY timestamp DESC LIMIT 1"
+        with self._get_db_cursor(row_factory=sqlite3.Row) as cursor:
+            cursor.execute(sql, (battery_id,))
+            return cursor.fetchone()
+        return None
+
     def get_uncategorized_tests(self):
         """Fetches all tests that are not linked to any battery."""
         sql = "SELECT id, timestamp, result, duration FROM tests WHERE battery_id IS NULL ORDER BY timestamp ASC"
