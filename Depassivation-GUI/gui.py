@@ -111,6 +111,10 @@ class DepassivationApp:
         self._setup_styles()
         self._create_widgets()
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+        # Initialize the database now that the UI (including the log area) exists
+        self.data_handler._init_database()
+
         self.clear_graph_and_stats()
         self.refresh_battery_dropdown()
         self.populate_battery_history_list()
