@@ -261,8 +261,6 @@ class DepassivationApp:
         self.history_tree.grid(row=0, column=0, sticky="nswe")
         self.history_tree.tag_configure('baseline', background='lightblue')
         self.history_tree.tag_configure('check', background='lightgreen')
-        self.compare_button = ttk.Button(test_list_frame, text="Compare Selected", command=self.compare_history_tests, state=tk.DISABLED)
-        self.compare_button.grid(row=1, column=0, sticky="ew", pady=(5,0))
         details_frame = ttk.LabelFrame(parent, text="Test Details", padding="10")
         details_frame.grid(row=0, column=1, rowspan=2, sticky="nswe", padx=(5, 0))
         details_frame.grid_columnconfigure(0, weight=1)
@@ -640,54 +638,63 @@ class DepassivationApp:
 
             tests_with_type.append({
                 'id': test['id'], 'timestamp': test['timestamp'], 'result': result_text,
-                'duration': test['duration'], 'type': test_type, 'processed': False
+                'duration': test['duration'], 'type': test_type
             })
 
+        display_items = []
         self.current_history_sequences = {}
-        for i in range(len(tests_with_type) - 2):
-            test1 = tests_with_type[i]
-            test2 = tests_with_type[i+1]
-            test3 = tests_with_type[i+2]
+        i = 0
+        while i < len(tests_with_type):
+            is_sequence = False
+            if i <= len(tests_with_type) - 3:
+                test1 = tests_with_type[i]
+                test2 = tests_with_type[i+1]
+                test3 = tests_with_type[i+2]
 
-            if not test1.get('processed') and not test2.get('processed') and not test3.get('processed') and \
-               test1['type'] == "Baseline" and test2['type'] == "Depassivation" and test3['type'] == "Check":
+                if test1['type'] == "Baseline" and test2['type'] == "Depassivation" and test3['type'] == "Check":
+                    is_sequence = True
+                    try:
+                        t2_start = datetime.strptime(test2['timestamp'], "%Y-%m-%d %H:%M:%S")
+                        t2_end = t2_start + timedelta(seconds=test2['duration'])
+                        t3_start = datetime.strptime(test3['timestamp'], "%Y-%m-%d %H:%M:%S")
+                        time_diff = t3_start - t2_end
 
-                try:
-                    t2_start = datetime.strptime(test2['timestamp'], "%Y-%m-%d %H:%M:%S")
-                    t2_end = t2_start + timedelta(seconds=test2['duration'])
-                    t3_start = datetime.strptime(test3['timestamp'], "%Y-%m-%d %H:%M:%S")
-                    time_diff = t3_start - t2_end
+                        total_seconds = max(0, time_diff.total_seconds())
+                        hours, remainder = divmod(total_seconds, 3600)
+                        minutes, seconds = divmod(remainder, 60)
+                        time_diff_str = ""
+                        if hours > 0: time_diff_str += f"{int(hours)}h "
+                        if minutes > 0: time_diff_str += f"{int(minutes)}m "
+                        time_diff_str += f"{int(seconds)}s"
 
-                    total_seconds = max(0, time_diff.total_seconds())
-                    hours, remainder = divmod(total_seconds, 3600)
-                    minutes, seconds = divmod(remainder, 60)
-                    time_diff_str = ""
-                    if hours > 0: time_diff_str += f"{int(hours)}h "
-                    if minutes > 0: time_diff_str += f"{int(minutes)}m "
-                    time_diff_str += f"{int(seconds)}s"
+                        original_result = test3['result'].split(' - ')[-1]
+                        final_result_text = f"Completed - {original_result} ({time_diff_str} rest)"
 
-                    original_result = test3['result'].split(' - ')[-1]
-                    tests_with_type[i+2]['result'] = f"Completed - {original_result} ({time_diff_str} rest)"
+                        sequence_info = {'baseline': test1, 'depassivation': test2, 'check': test3, 'rest_time': time_diff_str}
 
-                    sequence_info = {
-                        'baseline': test1, 'depassivation': test2, 'check': test3, 'rest_time': time_diff_str
-                    }
-                    self.current_history_sequences[test1['id']] = sequence_info
-                    self.current_history_sequences[test2['id']] = sequence_info
-                    self.current_history_sequences[test3['id']] = sequence_info
+                        master_id = test1['id']
+                        self.current_history_sequences[master_id] = sequence_info
 
-                    tests_with_type[i]['processed'] = True
-                    tests_with_type[i+1]['processed'] = True
-                    tests_with_type[i+2]['processed'] = True
-                except (ValueError, TypeError):
-                    continue
+                        display_items.append({
+                            'id': master_id, 'type': 'Sequence', 'timestamp': test1['timestamp'],
+                            'result': final_result_text, 'tags': ('check',)
+                        })
 
-        for test in tests_with_type:
-            tags = ()
-            if "baseline" in test['type'].lower(): tags = ('baseline',)
-            elif "check" in test['type'].lower(): tags = ('check',)
+                        i += 3
+                    except (ValueError, TypeError):
+                        is_sequence = False
 
-            self.history_tree.insert("", tk.END, values=(test['id'], test['type'], test['timestamp'], test['result']), tags=tags)
+            if not is_sequence:
+                test = tests_with_type[i]
+                tags = ('baseline',) if "baseline" in test['type'].lower() else ()
+                display_items.append({
+                    'id': test['id'], 'type': test['type'], 'timestamp': test['timestamp'],
+                    'result': test['result'], 'tags': tags
+                })
+                i += 1
+
+        for item in display_items:
+            self.history_tree.insert("", tk.END, values=(item['id'], item['type'], item['timestamp'], item['result']), tags=item['tags'])
 
     def update_graph_xaxis(self, duration):
         try:
@@ -818,7 +825,6 @@ class DepassivationApp:
     def on_history_selection_change(self, event):
         selection = self.history_tree.selection()
         self.delete_history_button.config(state=tk.NORMAL if selection else tk.DISABLED)
-        self.compare_button.config(state=tk.NORMAL if len(selection) == 2 else tk.DISABLED)
 
         if len(selection) == 1:
             item_id = self.history_tree.selection()[0]
@@ -985,35 +991,44 @@ class DepassivationApp:
             messagebox.showwarning("Warning", "No test selected to delete.")
             return
 
-        test_ids = [self.history_tree.item(item, "values")[0] for item in selection]
-        if messagebox.askyesno("Confirm Delete", f"Are you sure you want to permanently delete {len(test_ids)} selected test(s)?"):
-            for test_id in test_ids:
-                self.data_handler.delete_test(test_id)
-            self.log_message(f"INFO: Deleted {len(test_ids)} test(s).")
+        test_ids_to_delete = []
+        num_sequences = 0
+        num_individual_tests = 0
+
+        for item_id_in_tree in selection:
+            test_id_str = self.history_tree.item(item_id_in_tree, "values")[0]
+            test_id = int(test_id_str)
+
+            if test_id in self.current_history_sequences:
+                num_sequences += 1
+                sequence = self.current_history_sequences[test_id]
+                test_ids_to_delete.append(int(sequence['baseline']['id']))
+                test_ids_to_delete.append(int(sequence['depassivation']['id']))
+                test_ids_to_delete.append(int(sequence['check']['id']))
+            else:
+                num_individual_tests += 1
+                test_ids_to_delete.append(test_id)
+
+        test_ids_to_delete = sorted(list(set(test_ids_to_delete)))
+
+        msg_parts = []
+        if num_sequences > 0:
+            msg_parts.append(f"{num_sequences} sequence(s)")
+        if num_individual_tests > 0:
+            msg_parts.append(f"{num_individual_tests} individual test(s)")
+
+        if not msg_parts: return
+
+        confirm_msg = f"Are you sure you want to permanently delete {' and '.join(msg_parts)}?\nThis will delete a total of {len(test_ids_to_delete)} test records."
+
+        if messagebox.askyesno("Confirm Delete", confirm_msg, parent=self.root):
+            deleted_count = 0
+            for test_id in test_ids_to_delete:
+                if self.data_handler.delete_test(test_id):
+                    deleted_count += 1
+            self.log_message(f"INFO: Deleted {deleted_count} test record(s).")
             self.on_history_battery_selected()
             self.clear_history_details()
-
-    def compare_history_tests(self):
-        selection = self.history_tree.selection()
-        if len(selection) != 2:
-            messagebox.showwarning("Warning", "Please select exactly two tests to compare.")
-            return
-
-        test_id_1 = self.history_tree.item(selection[0], "values")[0]
-        test_id_2 = self.history_tree.item(selection[1], "values")[0]
-        summary1 = self.data_handler.get_test_summary(test_id_1)
-        summary2 = self.data_handler.get_test_summary(test_id_2)
-
-        msg = f"Comparison:\n\n"
-        msg += f"Test: {summary1['id']} vs {summary2['id']}\n"
-        msg += f"Min Voltage: {summary1['min_voltage']:.3f} V vs {summary2['min_voltage']:.3f} V\n"
-        msg += f"Resistance: {summary1['resistance']:.2f} Ω vs {summary2['resistance']:.2f} Ω\n\n"
-
-        if summary2['resistance'] < summary1['resistance']:
-            msg += "SUCCESS: Internal resistance dropped."
-        else:
-            msg += "INFO: Internal resistance did not improve."
-        messagebox.showinfo("Comparison Result", msg, parent=self.root)
 
     def export_history_graph(self):
         if self.current_sequence_info:
