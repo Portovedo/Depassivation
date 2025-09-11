@@ -259,12 +259,9 @@ void startDepassivationProcess(unsigned long duration) {
         Serial.println("PROCESS_START");
         setState(TEST_RUNNING);
         processStartTime = millis();
-        lastMeasurementTime = millis();
+        lastMeasurementTime = 0; // Ensure first measurement happens immediately
         depassivationDurationMs = duration;
-        digitalWrite(MOSFET_GATE_PIN, HIGH);
-        digitalWrite(MOSFET_LED_PIN, HIGH);
-        Serial.println("Load connected. Starting measurements...");
-        measureAndLogTestData(); // Log first point immediately
+        Serial.println("Starting measurements...");
     }
 }
 
@@ -276,17 +273,35 @@ void stopDepassivationProcess(String message) {
 }
 
 void measureAndLogTestData() {
-    float shuntVoltage_mV = ina219.getShuntVoltage_mV();
+    // Apply load right before measurement
+    digitalWrite(MOSFET_GATE_PIN, HIGH);
+    digitalWrite(MOSFET_LED_PIN, HIGH);
+    delay(50); // Short delay to stabilize voltage after load is applied
+
     float busVoltage_V = ina219.getBusVoltage_V();
+    float shuntVoltage_mV = ina219.getShuntVoltage_mV();
     float current_mA = ina219.getCurrent_mA();
+    float power_mW = ina219.getPower_mW();
     float loadVoltage_V = busVoltage_V + (shuntVoltage_mV / 1000.0);
+    float resistance_Ohm = 0;
+    if (abs(current_mA) > 0.1) {
+        resistance_Ohm = (loadVoltage_V * 1000) / current_mA;
+    }
 
     Serial.print("DATA,");
     Serial.print(millis() - processStartTime);
     Serial.print(",");
     Serial.print(loadVoltage_V, 3);
     Serial.print(",");
-    Serial.println(current_mA, 2);
+    Serial.print(current_mA, 2);
+    Serial.print(",");
+    Serial.print(power_mW, 2);
+    Serial.print(",");
+    Serial.println(resistance_Ohm, 2);
+
+    // Turn off load after sending data
+    digitalWrite(MOSFET_GATE_PIN, LOW);
+    digitalWrite(MOSFET_LED_PIN, LOW);
 }
 
 void measureAndLogLiveData() {

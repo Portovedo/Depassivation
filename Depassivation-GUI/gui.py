@@ -93,6 +93,9 @@ class DepassivationApp:
         self.selected_history_test_id = None
         self.data_points = []
         self.min_voltage = 0.0
+        self.max_current = 0.0
+        self.power = 0.0
+        self.resistance = 0.0
 
         if self.simulation_mode:
             from simulation_handler import SimulationHandler
@@ -106,17 +109,15 @@ class DepassivationApp:
         self.data_handler = DataHandler(self)
         config = self.data_handler.load_config()
         self.root.geometry(config.get("geometry", "950x850"))
-        self.duration_var = tk.StringVar(value=config.get("duration", "10"))
         self.pass_fail_voltage_var = tk.StringVar(value=config.get("pass_fail_voltage", "3.2"))
         self.selected_port_var = tk.StringVar(value=config.get("last_port", ""))
         self.selected_battery_var = tk.StringVar()
-        self.duration_var.trace_add("write", self.update_graph_xaxis)
+        self.baseline_duration_var = tk.StringVar(value=config.get("baseline_duration", "10"))
+        self.depassivation_duration_var = tk.StringVar(value=config.get("depassivation_duration", "180"))
 
         self._setup_styles()
         self._create_widgets()
-
         self.data_handler._init_database()
-
         self.clear_graph_and_stats()
         self.refresh_battery_dropdown()
         self.populate_battery_history_list()
@@ -136,6 +137,8 @@ class DepassivationApp:
         style.map('success.TButton', background=[('active', '#45a049')])
         style.configure('danger.TButton', background='#f44336', foreground='white', font=('Helvetica', 10, 'bold'))
         style.map('danger.TButton', background=[('active', '#e53935')])
+        style.configure('warning.TButton', background='#ff9800', foreground='white', font=('Helvetica', 10, 'bold'))
+        style.map('warning.TButton', background=[('active', '#fb8c00')])
         style.configure('pass.TLabel', background='green', foreground='white', font=('Helvetica', 16, 'bold'))
         style.configure('fail.TLabel', background='red', foreground='white', font=('Helvetica', 16, 'bold'))
 
@@ -168,7 +171,6 @@ class DepassivationApp:
         else:
             self._create_battery_control_frame(top_frame).grid(row=0, column=0, columnspan=2, sticky="nsew")
 
-        # Progress bar for tests
         progress_frame = ttk.LabelFrame(parent, text="Test Progress", padding="10")
         progress_frame.grid(row=1, column=0, sticky="ew", pady=(5,0))
         progress_frame.columnconfigure(0, weight=1)
@@ -213,13 +215,17 @@ class DepassivationApp:
         test_list_frame.pack(fill="both", expand=True, side="bottom", pady=(10,0))
         test_list_frame.rowconfigure(0, weight=1)
         test_list_frame.columnconfigure(0, weight=1)
-        self.history_tree = ttk.Treeview(test_list_frame, columns=("ID", "Timestamp", "Result"), show="headings")
+        self.history_tree = ttk.Treeview(test_list_frame, columns=("ID", "Timestamp", "Result"), show="headings", selectmode="extended")
         self.history_tree.heading("ID", text="ID")
         self.history_tree.heading("Timestamp", text="Date/Time")
         self.history_tree.heading("Result", text="Result")
         self.history_tree.column("ID", width=40, anchor='center')
-        self.history_tree.bind("<<TreeviewSelect>>", self.show_history_details)
+        self.history_tree.bind("<<TreeviewSelect>>", self.on_history_selection_change)
         self.history_tree.grid(row=0, column=0, sticky="nswe")
+        self.history_tree.tag_configure('baseline', background='lightblue')
+        self.history_tree.tag_configure('check', background='lightgreen')
+        self.compare_button = ttk.Button(test_list_frame, text="Compare Selected", command=self.compare_history_tests, state=tk.DISABLED)
+        self.compare_button.grid(row=1, column=0, sticky="ew", pady=(5,0))
         details_frame = ttk.LabelFrame(parent, text="Test Details", padding="10")
         details_frame.grid(row=0, column=1, rowspan=2, sticky="nswe", padx=(5, 0))
         details_frame.grid_columnconfigure(0, weight=1)
@@ -241,19 +247,23 @@ class DepassivationApp:
         self.history_pass_fail_voltage_label = ttk.Label(history_stats_frame, text="Target Voltage: -- V")
         self.history_pass_fail_voltage_label.pack(anchor="w", pady=2)
         self.history_min_voltage_label = ttk.Label(history_stats_frame, text="Min Voltage: -- V")
-        self.history_min_voltage_label.pack(anchor="w", pady=8)
+        self.history_min_voltage_label.pack(anchor="w", pady=2)
+        self.history_max_current_label = ttk.Label(history_stats_frame, text="Max Current: -- mA")
+        self.history_max_current_label.pack(anchor="w", pady=2)
+        self.history_power_label = ttk.Label(history_stats_frame, text="Power: -- mW")
+        self.history_power_label.pack(anchor="w", pady=2)
+        self.history_resistance_label = ttk.Label(history_stats_frame, text="Resistance: -- Ω")
+        self.history_resistance_label.pack(anchor="w", pady=8)
         self.history_result_label = ttk.Label(history_stats_frame, text="Result: --", font=("Helvetica", 14, "bold"))
         self.history_result_label.pack(anchor="w", pady=8)
         self.delete_history_button = ttk.Button(history_stats_frame, text="Delete This Test", command=self.delete_selected_history_test, style="danger.TButton", state=tk.DISABLED)
         self.delete_history_button.pack(pady=(10,0))
         export_frame = ttk.Frame(details_frame, padding=(0, 10))
         export_frame.grid(row=2, column=0, sticky="ew", pady=5)
-        export_frame.columnconfigure(0, weight=1)
-        export_frame.columnconfigure(1, weight=1)
         self.export_history_graph_button = ttk.Button(export_frame, text="Export Graph (.png)", command=self.export_history_graph, state=tk.DISABLED)
-        self.export_history_graph_button.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        self.export_history_graph_button.pack(side="left", expand=True, fill="x", padx=(0,5))
         self.export_history_data_button = ttk.Button(export_frame, text="Export Data (.csv)", command=self.export_history_data, state=tk.DISABLED)
-        self.export_history_data_button.grid(row=0, column=1, sticky="ew", padx=(5, 0))
+        self.export_history_data_button.pack(side="left", expand=True, fill="x", padx=(5,0))
 
     def _create_main_view_widgets(self, parent):
         frame = ttk.Frame(parent)
@@ -331,8 +341,14 @@ class DepassivationApp:
         self.voltage_label.pack(anchor="w", pady=5)
         self.current_label = ttk.Label(stats_frame, text="Current: -- mA", font=("Helvetica", 12))
         self.current_label.pack(anchor="w", pady=5)
+        self.max_current_label = ttk.Label(stats_frame, text="Max Current: -- mA", font=("Helvetica", 12))
+        self.max_current_label.pack(anchor="w", pady=5)
         self.min_voltage_label = ttk.Label(stats_frame, text="Min Voltage: -- V", font=("Helvetica", 12, "bold"))
         self.min_voltage_label.pack(anchor="w", pady=10)
+        self.power_label = ttk.Label(stats_frame, text="Power: -- mW", font=("Helvetica", 12))
+        self.power_label.pack(anchor="w", pady=5)
+        self.resistance_label = ttk.Label(stats_frame, text="Resistance: -- Ω", font=("Helvetica", 12))
+        self.resistance_label.pack(anchor="w", pady=5)
         ttk.Separator(stats_frame, orient='horizontal').pack(fill='x', pady=10, padx=5)
         self.pass_fail_label = ttk.Label(stats_frame, text="---", font=("Helvetica", 16, "bold"), anchor="center")
         self.pass_fail_label.pack(fill='x', expand=True, pady=5)
@@ -340,30 +356,48 @@ class DepassivationApp:
 
     def _create_control_frame(self, parent):
         frame = ttk.LabelFrame(parent, text="Controls", padding="10")
+        frame.columnconfigure(0, weight=1)
+
         button_frame = ttk.Frame(frame)
-        button_frame.pack(side="left", fill="y", padx=(0,10))
-        self.start_button = ttk.Button(button_frame, text="Start Test", command=self.start_process, style='success.TButton', state=tk.DISABLED)
-        self.start_button.pack(pady=2, fill='x')
-        self.abort_button = ttk.Button(button_frame, text="Abort Test", command=self.abort_process, state=tk.DISABLED, style='danger.TButton')
-        self.abort_button.pack(pady=2, fill='x')
-        self.toggle_live_button = ttk.Button(button_frame, text="Live View", command=lambda: self.show_frame("live" if self.current_mode == "main" else "main"))
-        self.toggle_live_button.pack(pady=(10, 2), fill='x')
+        button_frame.grid(row=0, column=0, sticky="ew")
+        button_frame.columnconfigure(0, weight=1)
+        button_frame.columnconfigure(1, weight=1)
+        button_frame.columnconfigure(2, weight=1)
+
+        self.baseline_button = ttk.Button(button_frame, text="Run Baseline Test", command=self.start_baseline_test, style='success.TButton', state=tk.DISABLED)
+        self.baseline_button.grid(row=0, column=0, sticky="ew", padx=2)
+        self.depassivation_button = ttk.Button(button_frame, text="Run Depassivation Cycle", command=self.start_depassivation_test, style='success.TButton', state=tk.DISABLED)
+        self.depassivation_button.grid(row=0, column=1, sticky="ew", padx=2)
+        self.check_button = ttk.Button(button_frame, text="Run Depassivation Check", command=self.start_check_test, style='success.TButton', state=tk.DISABLED)
+        self.check_button.grid(row=0, column=2, sticky="ew", padx=2)
+
+        self.abort_button = ttk.Button(frame, text="Abort Test", command=self.abort_process, state=tk.DISABLED, style='danger.TButton')
+        self.abort_button.grid(row=1, column=0, sticky="ew", pady=(5,0))
+
+        self.toggle_live_button = ttk.Button(frame, text="Live View", command=lambda: self.show_frame("live" if self.current_mode == "main" else "main"))
+        self.toggle_live_button.grid(row=2, column=0, sticky="ew", pady=(10, 2))
+
         export_frame = ttk.LabelFrame(frame, text="Export Last Test", padding=10)
-        export_frame.pack(side="left", fill="both", expand=True)
-        self.export_live_graph_button = ttk.Button(export_frame, text="Export Graph (.png)", command=self.export_live_graph, state=tk.DISABLED)
-        self.export_live_graph_button.pack(pady=2, fill='x')
-        self.export_live_data_button = ttk.Button(export_frame, text="Export Data (.csv)", command=self.export_live_data, state=tk.DISABLED)
-        self.export_live_data_button.pack(pady=2, fill='x')
+        export_frame.grid(row=3, column=0, sticky="ew", pady=(5,0))
+        export_frame.columnconfigure(0, weight=1)
+        export_frame.columnconfigure(1, weight=1)
+        self.export_live_graph_button = ttk.Button(export_frame, text="Export Graph", command=self.export_live_graph, state=tk.DISABLED)
+        self.export_live_graph_button.grid(row=0, column=0, sticky="ew", padx=(0,5))
+        self.export_live_data_button = ttk.Button(export_frame, text="Export Data", command=self.export_live_data, state=tk.DISABLED)
+        self.export_live_data_button.grid(row=0, column=1, sticky="ew", padx=(5,0))
         return frame
 
     def _create_settings_frame(self, parent):
         frame = ttk.LabelFrame(parent, text="Test Configuration", padding="10")
-        ttk.Label(frame, text="Duration (s):").pack(anchor="w")
-        self.duration_entry = ttk.Entry(frame, textvariable=self.duration_var)
-        self.duration_entry.pack(fill="x", expand=True, pady=(0,5))
-        ttk.Label(frame, text="Pass/Fail Voltage (V):").pack(anchor="w")
+        frame.columnconfigure(1, weight=1)
+
+        ttk.Label(frame, text="Baseline/Check Duration (s):").grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(frame, textvariable=self.baseline_duration_var, width=10).grid(row=0, column=1, sticky="ew", padx=5, pady=2)
+        ttk.Label(frame, text="Depassivation Duration (s):").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(frame, textvariable=self.depassivation_duration_var, width=10).grid(row=1, column=1, sticky="ew", padx=5, pady=2)
+        ttk.Label(frame, text="Pass/Fail Voltage (V):").grid(row=2, column=0, sticky="w", padx=5, pady=2)
         self.pass_fail_entry = ttk.Entry(frame, textvariable=self.pass_fail_voltage_var)
-        self.pass_fail_entry.pack(fill="x", expand=True)
+        self.pass_fail_entry.grid(row=2, column=1, sticky="ew", padx=5, pady=2)
         return frame
 
     def _create_log_frame(self, parent):
@@ -403,59 +437,98 @@ class DepassivationApp:
     def on_battery_selected(self, event):
         selected_name = self.selected_battery_var.get()
         battery = next((b for b in self.batteries if b['name'] == selected_name), None)
-        if battery:
+        is_ready = (self.connection_handler and self.connection_handler.is_connected()) or self.simulation_mode
+
+        if battery and is_ready:
             self.selected_battery_id = battery['id']
-            if self.connection_handler.is_connected() or self.simulation_mode:
-                self.start_button.config(state=tk.NORMAL)
+            self.baseline_button.config(state=tk.NORMAL)
+            self.depassivation_button.config(state=tk.NORMAL)
+            self.check_button.config(state=tk.NORMAL)
         else:
             self.selected_battery_id = None
-            self.start_button.config(state=tk.DISABLED)
+            if hasattr(self, 'baseline_button'):
+                self.baseline_button.config(state=tk.DISABLED)
+                self.depassivation_button.config(state=tk.DISABLED)
+                self.check_button.config(state=tk.DISABLED)
 
-    def start_process(self):
+    def start_baseline_test(self):
+        duration = int(self.baseline_duration_var.get())
+        self._start_test("Baseline Test", duration)
+
+    def start_depassivation_test(self):
+        duration = int(self.depassivation_duration_var.get())
+        self._start_test("Depassivation Cycle", duration)
+
+    def start_check_test(self):
+        duration = int(self.baseline_duration_var.get())
+        self._start_test("Depassivation Check", duration)
+
+    def _start_test(self, test_name, duration):
         if self.selected_battery_id is None:
             messagebox.showerror("Error", "Please select a battery before starting a test.")
             return
-        try:
-            duration = int(self.duration_var.get())
-        except ValueError:
-            messagebox.showerror("Error", "Duration must be a valid number.")
+        if self.is_running:
+            messagebox.showwarning("Warning", "A test is already in progress.")
             return
+
         self.clear_graph_and_stats()
+        self.cycle_label.config(text=f"Current Cycle: {test_name}")
+        self.test_progress_bar['maximum'] = duration * 1000
+        self.test_progress_bar['value'] = 0
+        self.update_graph_xaxis(duration)
         self.current_test_id = self.data_handler.create_new_test(self.selected_battery_id, duration, float(self.pass_fail_voltage_var.get()))
         self.is_running = True
-        self.start_button.config(state=tk.DISABLED)
+
+        self.baseline_button.config(state=tk.DISABLED)
+        self.depassivation_button.config(state=tk.DISABLED)
+        self.check_button.config(state=tk.DISABLED)
         self.abort_button.config(state=tk.NORMAL)
+
         self.connection_handler.send(f"START,{duration}\n")
 
     def abort_process(self):
         if not self.is_running: return
         self.is_running = False
         self.abort_button.config(state=tk.DISABLED)
-        self.start_button.config(state=tk.NORMAL if self.selected_battery_id else tk.DISABLED)
+        self.baseline_button.config(state=tk.NORMAL if self.selected_battery_id else tk.DISABLED)
+        self.depassivation_button.config(state=tk.NORMAL if self.selected_battery_id else tk.DISABLED)
+        self.check_button.config(state=tk.NORMAL if self.selected_battery_id else tk.DISABLED)
+
+        if self.current_mode == "live":
+            self.live_current_label.config(text="Current: --")
+            self.live_power_label.config(text="Power: --")
+            self.live_resistance_label.config(text="Resistance: --")
+
         if self.connection_handler.is_connected():
             self.connection_handler.send('ABORT\n')
 
     def toggle_mosfet(self):
         self.mosfet_on = not self.mosfet_on
         self.connection_handler.send(f"SET_MOSFET,{1 if self.mosfet_on else 0}\n")
-        self.mosfet_button.config(text="Deactivate Load" if self.mosfet_on else "Activate Load")
+        if self.mosfet_on:
+            self.mosfet_button.config(text="Deactivate Load", style="warning.TButton")
+        else:
+            self.mosfet_button.config(text="Activate Load", style="TButton")
+            self.live_current_label.config(text="Current: --")
+            self.live_power_label.config(text="Power: --")
+            self.live_resistance_label.config(text="Resistance: --")
 
     def _refresh_port_list(self):
         ports = self.connection_handler.get_ports()
         port_names = [p.device for p in ports]
         self.port_combobox['values'] = port_names
-        if port_names: self.port_combobox.set(port_names[0])
+        if port_names: self.port_combobox.set(port_names[0] if not self.selected_port_var.get() else self.selected_port_var.get())
 
     def toggle_connection(self):
         if self.connection_handler.is_connected():
             self.connection_handler.disconnect()
             self.connect_button.config(text="Connect")
-            self.start_button.config(state=tk.DISABLED)
+            self.on_battery_selected(None) # Re-evaluates button states
         else:
             if self.connection_handler.connect(self.selected_port_var.get()):
                 self.connect_button.config(text="Disconnect")
-                if self.selected_battery_id:
-                    self.start_button.config(state=tk.NORMAL)
+                self.on_battery_selected(None) # Re-evaluates button states
+                self.connection_handler.send("SET_MODE,IDLE\n")
 
     def populate_battery_history_list(self):
         self.history_battery_list.delete(0, tk.END)
@@ -478,12 +551,17 @@ class DepassivationApp:
         else:
             battery = next((b for b in self.batteries if b['name'] == selected_name), None)
             tests = self.data_handler.get_tests_for_battery(battery['id']) if battery else []
-        for test in tests:
-            self.history_tree.insert("", tk.END, values=(test[0], test[1], test[2] or "Incomplete"))
 
-    def update_graph_xaxis(self, *args):
+        for test in tests:
+            tags = ()
+            if "baseline" in test['result'].lower() or (test['duration'] <= 15 and "check" not in test['result'].lower()):
+                tags = ('baseline',)
+            elif "check" in test['result'].lower():
+                tags = ('check',)
+            self.history_tree.insert("", tk.END, values=(test['id'], test['timestamp'], test['result'] or "Incomplete"), tags=tags)
+
+    def update_graph_xaxis(self, duration):
         try:
-            duration = int(self.duration_var.get())
             if duration > 0:
                 self.ax.set_xlim(0, duration)
                 self.canvas.draw()
@@ -492,17 +570,22 @@ class DepassivationApp:
     def clear_graph_and_stats(self):
         self.data_points = []
         self.min_voltage = 0.0
+        self.max_current = 0.0
+        self.power = 0.0
+        self.resistance = 0.0
         self.last_completed_test_id = None
         self.voltage_label.config(text="Current Voltage: -- V")
         self.current_label.config(text="Current: -- mA")
+        self.max_current_label.config(text="Max Current: -- mA")
         self.min_voltage_label.config(text="Min Voltage: -- V")
+        self.power_label.config(text="Power: -- mW")
+        self.resistance_label.config(text="Resistance: -- Ω")
         self.pass_fail_label.config(text="---", style="TLabel")
         if hasattr(self, 'export_live_graph_button'):
             self.export_live_graph_button.config(state=tk.DISABLED)
             self.export_live_data_button.config(state=tk.DISABLED)
         self.ax.cla()
         self.ax.grid(True)
-        self.update_graph_xaxis()
         self.canvas.draw()
 
     def update_graph(self):
@@ -511,53 +594,67 @@ class DepassivationApp:
             times, voltages, _ = zip(*self.data_points)
             self.ax.plot(times, voltages, marker='o', linestyle='-')
         self.ax.grid(True)
-        self.update_graph_xaxis()
+        self.update_graph_xaxis(self.test_progress_bar['maximum'] / 1000.0)
         self.canvas.draw()
 
     def handle_serial_data(self, data):
         self.log_message(f"RECV: {data}")
         if data.startswith("BTN_PRESS"):
             _, button = data.split(',')
-            if button == "START": self.start_process()
-            elif button == "ABORT": self.abort_process()
-            elif button == "MEASURE": self.show_frame("live" if self.current_mode == "main" else "main")
+            # Physical buttons are not tied to specific tests in this UI version
         elif data.startswith("LIVE_DATA"):
             try:
                 _, v, c, p, r = data.split(',')
                 self.live_voltage_label.config(text=f"Voltage: {float(v):.3f} V")
-                self.live_current_label.config(text=f"Current: {float(c):.1f} mA")
-                self.live_power_label.config(text=f"Power: {float(p):.1f} mW")
-                self.live_resistance_label.config(text=f"Resistance: {float(r):.2f} Ω")
+                if self.mosfet_on:
+                    self.live_current_label.config(text=f"Current: {float(c):.1f} mA")
+                    self.live_power_label.config(text=f"Power: {float(p):.1f} mW")
+                    self.live_resistance_label.config(text=f"Resistance: {float(r):.2f} Ω")
             except (ValueError, IndexError): pass
         elif data.startswith("PROCESS_END"):
             self.is_running = False
-            self.start_button.config(state=tk.NORMAL if self.selected_battery_id else tk.DISABLED)
             self.abort_button.config(state=tk.DISABLED)
+            self.baseline_button.config(state=tk.NORMAL if self.selected_battery_id else tk.DISABLED)
+            self.depassivation_button.config(state=tk.NORMAL if self.selected_battery_id else tk.DISABLED)
+            self.check_button.config(state=tk.NORMAL if self.selected_battery_id else tk.DISABLED)
+
             if self.current_test_id:
                 self.export_live_graph_button.config(state=tk.NORMAL)
                 self.export_live_data_button.config(state=tk.NORMAL)
-                result = "N/A"
+                result_status = "N/A"
                 try:
                     pass_voltage = float(self.pass_fail_voltage_var.get())
-                    if self.min_voltage >= pass_voltage:
-                        result = "PASS"
-                        self.pass_fail_label.config(text="PASS", style="pass.TLabel")
-                    else:
-                        result = "FAIL"
-                        self.pass_fail_label.config(text="FAIL", style="fail.TLabel")
+                    result_status = "PASS" if self.min_voltage >= pass_voltage else "FAIL"
+                    self.pass_fail_label.config(text=result_status, style=f"{result_status.lower()}.TLabel")
                 except ValueError:
-                    self.pass_fail_label.config(text="ERROR", style="fail.TLabel")
-                self.data_handler.update_test_result(self.min_voltage, result)
+                    result_status = "ERROR"
+                    self.pass_fail_label.config(text=result_status, style="fail.TLabel")
+
+                test_name = self.cycle_label.cget("text").replace("Current Cycle: ", "")
+                final_result = f"{test_name} - {result_status}"
+                self.data_handler.update_test_result(self.min_voltage, self.max_current, self.power, self.resistance, final_result)
                 self.last_completed_test_id = self.current_test_id
                 self.current_test_id = None
             self.on_history_battery_selected(None)
         elif data.startswith("DATA,"):
             try:
-                _, time_ms, voltage_v, current_ma = data.split(',')
+                _, time_ms_str, voltage_v, current_ma, power_mw, resistance_ohm = data.split(',')
+                time_ms = int(time_ms_str)
                 voltage = float(voltage_v)
-                self.data_points.append((float(time_ms) / 1000.0, voltage, float(current_ma)))
+                current = float(current_ma)
+                self.power = float(power_mw)
+                self.resistance = float(resistance_ohm)
+
+                self.test_progress_bar['value'] = time_ms
+                self.data_points.append((time_ms / 1000.0, voltage, current))
                 self.voltage_label.config(text=f"Current Voltage: {voltage:.3f} V")
-                self.current_label.config(text=f"Current: {float(current_ma):.1f} mA")
+                self.current_label.config(text=f"Current: {current:.1f} mA")
+                self.power_label.config(text=f"Power: {self.power:.1f} mW")
+                self.resistance_label.config(text=f"Resistance: {self.resistance:.2f} Ω")
+
+                if current > self.max_current:
+                    self.max_current = current
+                    self.max_current_label.config(text=f"Max Current: {self.max_current:.1f} mA")
                 if self.min_voltage == 0.0 or voltage < self.min_voltage:
                     self.min_voltage = voltage
                     self.min_voltage_label.config(text=f"Min Voltage: {self.min_voltage:.3f} V")
@@ -571,31 +668,51 @@ class DepassivationApp:
             self.connection_handler.disconnect()
         self.root.destroy()
 
-    def show_history_details(self, event):
+    def on_history_selection_change(self, event):
         selection = self.history_tree.selection()
-        if not selection:
-            self.selected_history_test_id = None
-            self.delete_history_button.config(state=tk.DISABLED)
-            self.export_history_graph_button.config(state=tk.DISABLED)
-            self.export_history_data_button.config(state=tk.DISABLED)
-            return
-        self.delete_history_button.config(state=tk.NORMAL)
-        selected_item = selection[0]
+        self.delete_history_button.config(state=tk.NORMAL if selection else tk.DISABLED)
+        self.compare_button.config(state=tk.NORMAL if len(selection) == 2 else tk.DISABLED)
+        if len(selection) == 1:
+            self.show_history_details(selection[0])
+        else:
+            self.clear_history_details()
+
+    def clear_history_details(self):
+        self.selected_history_test_id = None
+        self.history_id_label.config(text="Test ID: --")
+        self.history_timestamp_label.config(text="Timestamp: --")
+        self.history_duration_label.config(text="Duration: -- s")
+        self.history_pass_fail_voltage_label.config(text="Target Voltage: -- V")
+        self.history_min_voltage_label.config(text="Min Voltage: -- V")
+        self.history_max_current_label.config(text="Max Current: -- mA")
+        self.history_power_label.config(text="Power: -- mW")
+        self.history_resistance_label.config(text="Resistance: -- Ω")
+        self.history_result_label.config(text="Result: --")
+        self.history_ax.cla()
+        self.history_ax.grid(True)
+        self.history_canvas.draw()
+        self.export_history_graph_button.config(state=tk.DISABLED)
+        self.export_history_data_button.config(state=tk.DISABLED)
+
+    def show_history_details(self, selected_item):
         test_id = self.history_tree.item(selected_item, "values")[0]
         self.selected_history_test_id = test_id
         summary = self.data_handler.get_test_summary(test_id)
-        data_points = self.data_handler.get_test_data(test_id)
         if not summary:
             self.log_message(f"WARN: No details found for test ID {test_id}.")
             return
+
+        data_points = self.data_handler.get_test_data(test_id)
         self.history_id_label.config(text=f"Test ID: {summary['id']}")
         self.history_timestamp_label.config(text=f"Timestamp: {summary['timestamp']}")
         self.history_duration_label.config(text=f"Duration: {summary['duration']} s")
         self.history_pass_fail_voltage_label.config(text=f"Target Voltage: {summary['pass_fail_voltage']} V")
-        min_v = summary['min_voltage']
-        self.history_min_voltage_label.config(text=f"Min Voltage: {min_v:.3f} V" if min_v is not None else "N/A")
-        result = summary['result']
-        self.history_result_label.config(text=f"Result: {result if result else 'N/A'}")
+        self.history_min_voltage_label.config(text=f"Min Voltage: {summary['min_voltage']:.3f}" if summary['min_voltage'] is not None else "--")
+        self.history_max_current_label.config(text=f"Max Current: {summary['max_current']:.1f} mA" if summary['max_current'] is not None else "--")
+        self.history_power_label.config(text=f"Power: {summary['power']:.1f} mW" if summary['power'] is not None else "--")
+        self.history_resistance_label.config(text=f"Resistance: {summary['resistance']:.2f} Ω" if summary['resistance'] is not None else "--")
+        self.history_result_label.config(text=f"Result: {summary['result'] or 'N/A'}")
+
         self.history_ax.cla()
         if data_points:
             self.export_history_graph_button.config(state=tk.NORMAL)
@@ -615,27 +732,48 @@ class DepassivationApp:
         self.history_canvas.draw()
 
     def delete_selected_history_test(self):
-        if self.selected_history_test_id is None:
+        selection = self.history_tree.selection()
+        if not selection:
             messagebox.showwarning("Warning", "No test selected to delete.")
             return
-        if messagebox.askyesno("Confirm Delete", f"Are you sure you want to permanently delete test ID {self.selected_history_test_id}?"):
-            if self.data_handler.delete_test(self.selected_history_test_id):
-                self.log_message(f"INFO: Deleted test {self.selected_history_test_id}.")
-                self.selected_history_test_id = None
-                self.history_id_label.config(text="Test ID: --")
-                self.history_timestamp_label.config(text="Timestamp: --")
-                self.history_result_label.config(text="Result: --")
-                self.history_ax.cla()
-                self.history_canvas.draw()
-                self.on_history_battery_selected()
-            else:
-                messagebox.showerror("Error", "Failed to delete the test.")
+
+        test_ids = [self.history_tree.item(item, "values")[0] for item in selection]
+        if messagebox.askyesno("Confirm Delete", f"Are you sure you want to permanently delete {len(test_ids)} selected test(s)?"):
+            for test_id in test_ids:
+                self.data_handler.delete_test(test_id)
+            self.log_message(f"INFO: Deleted {len(test_ids)} test(s).")
+            self.on_history_battery_selected()
+
+    def compare_history_tests(self):
+        selection = self.history_tree.selection()
+        if len(selection) != 2:
+            messagebox.showwarning("Warning", "Please select exactly two tests to compare.")
+            return
+
+        test_id_1 = self.history_tree.item(selection[0], "values")[0]
+        test_id_2 = self.history_tree.item(selection[1], "values")[0]
+        summary1 = self.data_handler.get_test_summary(test_id_1)
+        summary2 = self.data_handler.get_test_summary(test_id_2)
+
+        msg = f"Comparison:\n\n"
+        msg += f"Test: {summary1['id']} vs {summary2['id']}\n"
+        msg += f"Min Voltage: {summary1['min_voltage']:.3f} V vs {summary2['min_voltage']:.3f} V\n"
+        msg += f"Resistance: {summary1['resistance']:.2f} Ω vs {summary2['resistance']:.2f} Ω\n\n"
+
+        if summary2['resistance'] < summary1['resistance']:
+            msg += "SUCCESS: Internal resistance dropped."
+        else:
+            msg += "INFO: Internal resistance did not improve."
+        messagebox.showinfo("Comparison Result", msg, parent=self.root)
 
     def export_history_graph(self):
-        if self.selected_history_test_id is None:
+        selection = self.history_tree.selection()
+        if not selection:
             messagebox.showwarning("Warning", "Please select a test from the history list first.")
             return
-        filepath = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG files", "*.png")], title="Save History Graph As...", initialfile=f"test_graph_{self.selected_history_test_id}.png")
+
+        test_id = self.history_tree.item(selection[0], "values")[0]
+        filepath = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG files", "*.png")], title="Save History Graph As...", initialfile=f"test_graph_{test_id}.png")
         if not filepath: return
         try:
             self.history_fig.savefig(filepath, dpi=300)
@@ -644,14 +782,18 @@ class DepassivationApp:
             messagebox.showerror("Error", f"Failed to save graph: {e}")
 
     def export_history_data(self):
-        if self.selected_history_test_id is None:
+        selection = self.history_tree.selection()
+        if not selection:
             messagebox.showwarning("Warning", "Please select a test from the history list first.")
             return
-        test_data = self.data_handler.get_test_data(self.selected_history_test_id)
+
+        test_id = self.history_tree.item(selection[0], "values")[0]
+        test_data = self.data_handler.get_test_data(test_id)
         if not test_data:
             messagebox.showwarning("Warning", "No data points found for the selected test.")
             return
-        filepath = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv")], title="Save History Data As...", initialfile=f"test_data_{self.selected_history_test_id}.csv")
+
+        filepath = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv")], title="Save History Data As...", initialfile=f"test_data_{test_id}.csv")
         if not filepath: return
         try:
             with open(filepath, 'w', newline='') as f:
