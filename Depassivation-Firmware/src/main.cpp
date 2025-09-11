@@ -50,7 +50,7 @@ State currentState = IDLE;
 unsigned long processStartTime = 0;
 unsigned long depassivationDurationMs = 0;
 unsigned long lastMeasurementTime = 0;
-const long measurementIntervalMs = 1000;
+const long measurementIntervalMs = 100;
 unsigned long stateChangeTime = 0; // For timed states like SUCCESS/FAILED
 
 // --- Button Debouncing ---
