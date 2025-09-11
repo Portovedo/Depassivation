@@ -216,6 +216,16 @@ class DataHandler:
             return cursor.rowcount > 0
         return False
 
+    def delete_all_tests_for_battery(self, battery_id):
+        """Deletes all tests associated with a specific battery ID."""
+        if battery_id is None: return False
+        sql = "DELETE FROM tests WHERE battery_id = ?"
+        with self._get_db_cursor(commit=True) as cursor:
+            cursor.execute(sql, (battery_id,))
+            self.app.log_message(f"INFO: Deleted {cursor.rowcount} tests for battery ID: {battery_id}.")
+            return cursor.rowcount > 0
+        return False
+
     # --- Unchanged Profile and Config Methods ---
     def load_profiles(self):
         if os.path.exists(PROFILES_FILE):

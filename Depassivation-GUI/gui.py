@@ -37,8 +37,19 @@ class BatteryManagerWindow(tk.Toplevel):
         scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.battery_listbox.yview)
         self.battery_listbox.configure(yscrollcommand=scrollbar.set)
         scrollbar.grid(row=0, column=1, sticky="ns")
-        delete_button = ttk.Button(list_frame, text="Delete Selected", command=self.delete_battery, style="danger.TButton")
-        delete_button.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(5,0))
+
+        # --- Button Frame ---
+        button_frame = ttk.Frame(list_frame)
+        button_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(5,0))
+        button_frame.columnconfigure(0, weight=1)
+        button_frame.columnconfigure(1, weight=1)
+
+        delete_button = ttk.Button(button_frame, text="Delete Battery", command=self.delete_battery, style="danger.TButton")
+        delete_button.grid(row=0, column=0, sticky="ew", padx=(0, 2))
+
+        delete_tests_button = ttk.Button(button_frame, text="Delete All Tests", command=self.delete_battery_tests, style="danger.TButton")
+        delete_tests_button.grid(row=0, column=1, sticky="ew", padx=(2, 0))
+
         add_frame = ttk.LabelFrame(main_frame, text="Register New Battery")
         add_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
         add_frame.columnconfigure(0, weight=1)
@@ -81,6 +92,27 @@ class BatteryManagerWindow(tk.Toplevel):
             else:
                 messagebox.showerror("Error", "Could not delete the battery.", parent=self)
 
+    def delete_battery_tests(self):
+        selection_index = self.battery_listbox.curselection()
+        if not selection_index:
+            messagebox.showwarning("Warning", "Please select a battery to delete its tests.", parent=self)
+            return
+        selected_battery = self.batteries[selection_index[0]]
+
+        tests = self.data_handler.get_tests_for_battery(selected_battery['id'])
+        test_count = len(tests)
+
+        if test_count == 0:
+            messagebox.showinfo("Info", f"Battery '{selected_battery['name']}' has no associated tests to delete.", parent=self)
+            return
+
+        if messagebox.askyesno("Confirm", f"Are you sure you want to delete all {test_count} tests for '{selected_battery['name']}'?\nThis action cannot be undone.", parent=self):
+            if self.data_handler.delete_all_tests_for_battery(selected_battery['id']):
+                self.parent_app.log_message(f"INFO: Deleted all tests for battery '{selected_battery['name']}'.")
+                self.parent_app.on_history_battery_selected() # Refresh history view
+            else:
+                messagebox.showerror("Error", "Could not delete the tests for the selected battery.", parent=self)
+
 class DepassivationApp:
     def __init__(self, root, simulate=False):
         self.root = root
@@ -91,6 +123,9 @@ class DepassivationApp:
         self.last_completed_test_id = None
         self.selected_battery_id = None
         self.selected_history_test_id = None
+        self.current_history_sequences = {}
+        self.current_sequence_info = None
+        self.history_graph_view = 'comparison'
         self.data_points = []
         self.min_voltage = 0.0
         self.max_current = 0.0
@@ -215,11 +250,13 @@ class DepassivationApp:
         test_list_frame.pack(fill="both", expand=True, side="bottom", pady=(10,0))
         test_list_frame.rowconfigure(0, weight=1)
         test_list_frame.columnconfigure(0, weight=1)
-        self.history_tree = ttk.Treeview(test_list_frame, columns=("ID", "Timestamp", "Result"), show="headings", selectmode="extended")
+        self.history_tree = ttk.Treeview(test_list_frame, columns=("ID", "Type", "Timestamp", "Result"), show="headings", selectmode="extended")
         self.history_tree.heading("ID", text="ID")
+        self.history_tree.heading("Type", text="Type")
         self.history_tree.heading("Timestamp", text="Date/Time")
         self.history_tree.heading("Result", text="Result")
         self.history_tree.column("ID", width=40, anchor='center')
+        self.history_tree.column("Type", width=100, anchor='center')
         self.history_tree.bind("<<TreeviewSelect>>", self.on_history_selection_change)
         self.history_tree.grid(row=0, column=0, sticky="nswe")
         self.history_tree.tag_configure('baseline', background='lightblue')
@@ -236,28 +273,64 @@ class DepassivationApp:
         self.history_ax = self.history_fig.add_subplot(111)
         self.history_canvas = FigureCanvasTkAgg(self.history_fig, master=history_graph_frame)
         self.history_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        history_stats_frame = ttk.LabelFrame(details_frame, text="Test Metrics & Actions", padding="10")
-        history_stats_frame.grid(row=1, column=0, sticky="ew", pady=(5, 0))
-        self.history_id_label = ttk.Label(history_stats_frame, text="Test ID: --")
+        self.graph_toggle_button = ttk.Button(history_graph_frame, text="Show Depassivation Cycle", command=self.toggle_history_graph_view)
+        # This button is packed/unpacked dynamically
+
+        # This container will hold either the single test stats or the comparison stats
+        history_stats_container = ttk.Frame(details_frame)
+        history_stats_container.grid(row=1, column=0, sticky="ew", pady=(5, 0))
+        history_stats_container.grid_columnconfigure(0, weight=1)
+        history_stats_container.grid_rowconfigure(0, weight=1)
+
+        # --- Single Test View ---
+        self.history_stats_frame = ttk.LabelFrame(history_stats_container, text="Test Metrics & Actions", padding="10")
+        self.history_stats_frame.grid(row=0, column=0, sticky="nsew")
+        self.history_id_label = ttk.Label(self.history_stats_frame, text="Test ID: --")
         self.history_id_label.pack(anchor="w", pady=2)
-        self.history_timestamp_label = ttk.Label(history_stats_frame, text="Timestamp: --")
+        self.history_timestamp_label = ttk.Label(self.history_stats_frame, text="Timestamp: --")
         self.history_timestamp_label.pack(anchor="w", pady=2)
-        self.history_duration_label = ttk.Label(history_stats_frame, text="Duration: -- s")
+        self.history_duration_label = ttk.Label(self.history_stats_frame, text="Duration: -- s")
         self.history_duration_label.pack(anchor="w", pady=2)
-        self.history_pass_fail_voltage_label = ttk.Label(history_stats_frame, text="Target Voltage: -- V")
+        self.history_pass_fail_voltage_label = ttk.Label(self.history_stats_frame, text="Target Voltage: -- V")
         self.history_pass_fail_voltage_label.pack(anchor="w", pady=2)
-        self.history_min_voltage_label = ttk.Label(history_stats_frame, text="Min Voltage: -- V")
+        self.history_min_voltage_label = ttk.Label(self.history_stats_frame, text="Min Voltage: -- V")
         self.history_min_voltage_label.pack(anchor="w", pady=2)
-        self.history_max_current_label = ttk.Label(history_stats_frame, text="Max Current: -- mA")
+        self.history_max_current_label = ttk.Label(self.history_stats_frame, text="Max Current: -- mA")
         self.history_max_current_label.pack(anchor="w", pady=2)
-        self.history_power_label = ttk.Label(history_stats_frame, text="Power: -- mW")
+        self.history_power_label = ttk.Label(self.history_stats_frame, text="Power: -- mW")
         self.history_power_label.pack(anchor="w", pady=2)
-        self.history_resistance_label = ttk.Label(history_stats_frame, text="Resistance: -- Ω")
+        self.history_resistance_label = ttk.Label(self.history_stats_frame, text="Resistance: -- Ω")
         self.history_resistance_label.pack(anchor="w", pady=8)
-        self.history_result_label = ttk.Label(history_stats_frame, text="Result: --", font=("Helvetica", 14, "bold"))
+        self.history_result_label = ttk.Label(self.history_stats_frame, text="Result: --", font=("Helvetica", 14, "bold"))
         self.history_result_label.pack(anchor="w", pady=8)
-        self.delete_history_button = ttk.Button(history_stats_frame, text="Delete This Test", command=self.delete_selected_history_test, style="danger.TButton", state=tk.DISABLED)
+        self.delete_history_button = ttk.Button(self.history_stats_frame, text="Delete This Test", command=self.delete_selected_history_test, style="danger.TButton", state=tk.DISABLED)
         self.delete_history_button.pack(pady=(10,0))
+
+        # --- Sequence Comparison View ---
+        self.history_comparison_frame = ttk.LabelFrame(history_stats_container, text="Sequence Comparison", padding="10")
+        self.history_comparison_frame.grid(row=0, column=0, sticky="nsew")
+
+        ttk.Label(self.history_comparison_frame, text="Metric", font=('Helvetica', 10, 'bold')).grid(row=0, column=0, padx=5, pady=2, sticky='w')
+        ttk.Label(self.history_comparison_frame, text="Baseline (1)", font=('Helvetica', 10, 'bold')).grid(row=0, column=1, padx=5, pady=2, sticky='w')
+        ttk.Label(self.history_comparison_frame, text="Check (3)", font=('Helvetica', 10, 'bold')).grid(row=0, column=2, padx=5, pady=2, sticky='w')
+        ttk.Label(self.history_comparison_frame, text="Change", font=('Helvetica', 10, 'bold')).grid(row=0, column=3, padx=5, pady=2, sticky='w')
+
+        self.comparison_labels = {}
+        metrics = ["Min Voltage", "Max Current", "Resistance"]
+        for i, metric in enumerate(metrics, 1):
+            ttk.Label(self.history_comparison_frame, text=f"{metric}:").grid(row=i, column=0, sticky='w', padx=5, pady=2)
+            self.comparison_labels[f'baseline_{metric.lower().replace(" ", "_")}'] = ttk.Label(self.history_comparison_frame, text="--")
+            self.comparison_labels[f'baseline_{metric.lower().replace(" ", "_")}'].grid(row=i, column=1, sticky='w', padx=5)
+            self.comparison_labels[f'check_{metric.lower().replace(" ", "_")}'] = ttk.Label(self.history_comparison_frame, text="--")
+            self.comparison_labels[f'check_{metric.lower().replace(" ", "_")}'].grid(row=i, column=2, sticky='w', padx=5)
+            self.comparison_labels[f'change_{metric.lower().replace(" ", "_")}'] = ttk.Label(self.history_comparison_frame, text="--")
+            self.comparison_labels[f'change_{metric.lower().replace(" ", "_")}'].grid(row=i, column=3, sticky='w', padx=5)
+
+        ttk.Separator(self.history_comparison_frame, orient='horizontal').grid(row=len(metrics)+1, column=0, columnspan=4, sticky='ew', pady=10)
+        self.comparison_summary_label = ttk.Label(self.history_comparison_frame, text="Summary: --", font=('Helvetica', 11, 'bold'))
+        self.comparison_summary_label.grid(row=len(metrics)+2, column=0, columnspan=4, sticky='w', padx=5, pady=5)
+
+        self.history_stats_frame.tkraise()
         export_frame = ttk.Frame(details_frame, padding=(0, 10))
         export_frame.grid(row=2, column=0, sticky="ew", pady=5)
         self.export_history_graph_button = ttk.Button(export_frame, text="Export Graph (.png)", command=self.export_history_graph, state=tk.DISABLED)
@@ -542,9 +615,12 @@ class DepassivationApp:
             if self.history_battery_list.size() > 0:
                 self.history_battery_list.selection_set(0)
                 selection_idx = (0,)
-            else: return
+            else:
+                return
+
         for item in self.history_tree.get_children():
             self.history_tree.delete(item)
+
         selected_name = self.history_battery_list.get(selection_idx[0])
         if selected_name == "[Uncategorized Tests]":
             tests = self.data_handler.get_uncategorized_tests()
@@ -552,13 +628,66 @@ class DepassivationApp:
             battery = next((b for b in self.batteries if b['name'] == selected_name), None)
             tests = self.data_handler.get_tests_for_battery(battery['id']) if battery else []
 
+        from datetime import datetime, timedelta
+
+        tests_with_type = []
         for test in tests:
+            result_text = test['result'] or "Incomplete"
+            test_type = "Unknown"
+            if "Baseline Test" in result_text: test_type = "Baseline"
+            elif "Depassivation Cycle" in result_text: test_type = "Depassivation"
+            elif "Depassivation Check" in result_text: test_type = "Check"
+
+            tests_with_type.append({
+                'id': test['id'], 'timestamp': test['timestamp'], 'result': result_text,
+                'duration': test['duration'], 'type': test_type, 'processed': False
+            })
+
+        self.current_history_sequences = {}
+        for i in range(len(tests_with_type) - 2):
+            test1 = tests_with_type[i]
+            test2 = tests_with_type[i+1]
+            test3 = tests_with_type[i+2]
+
+            if not test1.get('processed') and not test2.get('processed') and not test3.get('processed') and \
+               test1['type'] == "Baseline" and test2['type'] == "Depassivation" and test3['type'] == "Check":
+
+                try:
+                    t2_start = datetime.strptime(test2['timestamp'], "%Y-%m-%d %H:%M:%S")
+                    t2_end = t2_start + timedelta(seconds=test2['duration'])
+                    t3_start = datetime.strptime(test3['timestamp'], "%Y-%m-%d %H:%M:%S")
+                    time_diff = t3_start - t2_end
+
+                    total_seconds = max(0, time_diff.total_seconds())
+                    hours, remainder = divmod(total_seconds, 3600)
+                    minutes, seconds = divmod(remainder, 60)
+                    time_diff_str = ""
+                    if hours > 0: time_diff_str += f"{int(hours)}h "
+                    if minutes > 0: time_diff_str += f"{int(minutes)}m "
+                    time_diff_str += f"{int(seconds)}s"
+
+                    original_result = test3['result'].split(' - ')[-1]
+                    tests_with_type[i+2]['result'] = f"Completed - {original_result} ({time_diff_str} rest)"
+
+                    sequence_info = {
+                        'baseline': test1, 'depassivation': test2, 'check': test3, 'rest_time': time_diff_str
+                    }
+                    self.current_history_sequences[test1['id']] = sequence_info
+                    self.current_history_sequences[test2['id']] = sequence_info
+                    self.current_history_sequences[test3['id']] = sequence_info
+
+                    tests_with_type[i]['processed'] = True
+                    tests_with_type[i+1]['processed'] = True
+                    tests_with_type[i+2]['processed'] = True
+                except (ValueError, TypeError):
+                    continue
+
+        for test in tests_with_type:
             tags = ()
-            if "baseline" in test['result'].lower() or (test['duration'] <= 15 and "check" not in test['result'].lower()):
-                tags = ('baseline',)
-            elif "check" in test['result'].lower():
-                tags = ('check',)
-            self.history_tree.insert("", tk.END, values=(test['id'], test['timestamp'], test['result'] or "Incomplete"), tags=tags)
+            if "baseline" in test['type'].lower(): tags = ('baseline',)
+            elif "check" in test['type'].lower(): tags = ('check',)
+
+            self.history_tree.insert("", tk.END, values=(test['id'], test['type'], test['timestamp'], test['result']), tags=tags)
 
     def update_graph_xaxis(self, duration):
         try:
@@ -635,6 +764,24 @@ class DepassivationApp:
                 self.data_handler.update_test_result(self.min_voltage, self.max_current, self.power, self.resistance, final_result)
                 self.last_completed_test_id = self.current_test_id
                 self.current_test_id = None
+
+            # --- FIX: Auto-select the battery that was just tested in the history view ---
+            if self.last_completed_test_id:
+                summary = self.data_handler.get_test_summary(self.last_completed_test_id)
+                if summary and summary['battery_id'] is not None:
+                    battery_id_to_select = summary['battery_id']
+                    all_batteries = self.data_handler.get_all_batteries()
+                    battery_to_select = next((b for b in all_batteries if b['id'] == battery_id_to_select), None)
+                    if battery_to_select:
+                        listbox_items = self.history_battery_list.get(0, tk.END)
+                        try:
+                            idx = listbox_items.index(battery_to_select['name'])
+                            self.history_battery_list.selection_clear(0, tk.END)
+                            self.history_battery_list.selection_set(idx)
+                            self.history_battery_list.see(idx)
+                        except ValueError:
+                            pass
+
             self.on_history_battery_selected(None)
         elif data.startswith("DATA,"):
             try:
@@ -672,13 +819,23 @@ class DepassivationApp:
         selection = self.history_tree.selection()
         self.delete_history_button.config(state=tk.NORMAL if selection else tk.DISABLED)
         self.compare_button.config(state=tk.NORMAL if len(selection) == 2 else tk.DISABLED)
+
         if len(selection) == 1:
-            self.show_history_details(selection[0])
+            item_id = self.history_tree.selection()[0]
+            test_id = self.history_tree.item(item_id, "values")[0]
+
+            if test_id in self.current_history_sequences:
+                self.show_sequence_details(self.current_history_sequences[test_id])
+            else:
+                self.show_history_details(item_id)
         else:
             self.clear_history_details()
 
     def clear_history_details(self):
         self.selected_history_test_id = None
+        self.current_sequence_info = None
+        self.history_stats_frame.tkraise()
+        self.graph_toggle_button.pack_forget()
         self.history_id_label.config(text="Test ID: --")
         self.history_timestamp_label.config(text="Timestamp: --")
         self.history_duration_label.config(text="Duration: -- s")
@@ -695,6 +852,10 @@ class DepassivationApp:
         self.export_history_data_button.config(state=tk.DISABLED)
 
     def show_history_details(self, selected_item):
+        self.history_stats_frame.tkraise()
+        self.graph_toggle_button.pack_forget()
+        self.current_sequence_info = None
+
         test_id = self.history_tree.item(selected_item, "values")[0]
         self.selected_history_test_id = test_id
         summary = self.data_handler.get_test_summary(test_id)
@@ -731,6 +892,93 @@ class DepassivationApp:
         self.history_fig.tight_layout()
         self.history_canvas.draw()
 
+    def show_sequence_details(self, sequence_info):
+        self.history_comparison_frame.tkraise()
+        self.current_sequence_info = sequence_info
+        self.selected_history_test_id = None # Not a single test
+        self.history_graph_view = 'comparison'
+        self._plot_sequence_graph()
+        self.graph_toggle_button.pack(pady=(5,0), fill='x')
+
+        s1 = self.data_handler.get_test_summary(sequence_info['baseline']['id'])
+        s3 = self.data_handler.get_test_summary(sequence_info['check']['id'])
+
+        metrics = ["min_voltage", "max_current", "resistance"]
+        formats = [".3f", ".1f", ".2f"]
+        units = ["V", "mA", "Ω"]
+        all_changes = []
+
+        for i, metric in enumerate(metrics):
+            val1 = s1.get(metric) if s1 else None
+            val3 = s3.get(metric) if s3 else None
+
+            self.comparison_labels[f'baseline_{metric}'].config(text=f"{val1:{formats[i]}} {units[i]}" if val1 is not None else "--")
+            self.comparison_labels[f'check_{metric}'].config(text=f"{val3:{formats[i]}} {units[i]}" if val3 is not None else "--")
+
+            if val1 is not None and val3 is not None:
+                change = val3 - val1
+                percent_change = (change / val1 * 100) if val1 != 0 else 0
+                sign = "+" if change > 0 else ""
+                self.comparison_labels[f'change_{metric}'].config(text=f"{sign}{change:{formats[i]}} ({sign}{percent_change:.1f}%)")
+                all_changes.append(percent_change if metric != "resistance" else -percent_change)
+            else:
+                 self.comparison_labels[f'change_{metric}'].config(text="--")
+
+        if all_changes and all(c > -5 for c in all_changes): # Allow small negative change
+             summary_text = "SUCCESS: Battery characteristics improved."
+        else:
+             summary_text = "INFO: Significant improvement not detected."
+        self.comparison_summary_label.config(text=summary_text)
+
+    def toggle_history_graph_view(self):
+        if not self.current_sequence_info: return
+
+        if self.history_graph_view == 'comparison':
+            self.history_graph_view = 'depassivation'
+            self.graph_toggle_button.config(text="Show Comparison Graph")
+        else:
+            self.history_graph_view = 'comparison'
+            self.graph_toggle_button.config(text="Show Depassivation Cycle")
+        self._plot_sequence_graph()
+
+    def _plot_sequence_graph(self):
+        if not self.current_sequence_info: return
+        self.history_ax.cla()
+
+        if self.history_graph_view == 'comparison':
+            s1 = self.data_handler.get_test_summary(self.current_sequence_info['baseline']['id'])
+            d1 = self.data_handler.get_test_data(s1['id'])
+            s3 = self.data_handler.get_test_summary(self.current_sequence_info['check']['id'])
+            d3 = self.data_handler.get_test_data(s3['id'])
+
+            if d1:
+                t, v, _ = zip(*d1)
+                self.history_ax.plot(t, v, marker='.', linestyle='-', label=f"Baseline (ID: {s1['id']})")
+            if d3:
+                t, v, _ = zip(*d3)
+                self.history_ax.plot(t, v, marker='.', linestyle='-', label=f"Check (ID: {s3['id']})")
+
+            self.history_ax.set_title("Sequence: Baseline vs. Check")
+            self.history_ax.legend()
+            self.history_ax.set_xlim(0, max(s1['duration'], s3['duration']))
+
+        else: # 'depassivation' view
+            s2 = self.data_handler.get_test_summary(self.current_sequence_info['depassivation']['id'])
+            d2 = self.data_handler.get_test_data(s2['id'])
+            if d2:
+                t, v, _ = zip(*d2)
+                self.history_ax.plot(t, v, marker='.', linestyle='-', color='green', label=f"Depassivation (ID: {s2['id']})")
+            self.history_ax.set_title(f"Sequence: Depassivation Cycle (ID: {s2['id']})")
+            self.history_ax.legend()
+            self.history_ax.set_xlim(0, s2['duration'])
+
+        self.history_ax.set_xlabel("Time (s)")
+        self.history_ax.set_ylabel("Voltage (V)")
+        self.history_ax.set_ylim(0, 5)
+        self.history_ax.grid(True)
+        self.history_fig.tight_layout()
+        self.history_canvas.draw()
+
     def delete_selected_history_test(self):
         selection = self.history_tree.selection()
         if not selection:
@@ -743,6 +991,7 @@ class DepassivationApp:
                 self.data_handler.delete_test(test_id)
             self.log_message(f"INFO: Deleted {len(test_ids)} test(s).")
             self.on_history_battery_selected()
+            self.clear_history_details()
 
     def compare_history_tests(self):
         selection = self.history_tree.selection()
@@ -767,13 +1016,16 @@ class DepassivationApp:
         messagebox.showinfo("Comparison Result", msg, parent=self.root)
 
     def export_history_graph(self):
-        selection = self.history_tree.selection()
-        if not selection:
-            messagebox.showwarning("Warning", "Please select a test from the history list first.")
+        if self.current_sequence_info:
+            test_ids = f"seq_{self.current_sequence_info['baseline']['id']}_{self.current_sequence_info['check']['id']}"
+            initial_file = f"test_graph_{test_ids}.png"
+        elif self.selected_history_test_id:
+            initial_file = f"test_graph_{self.selected_history_test_id}.png"
+        else:
+            messagebox.showwarning("Warning", "Please select a test or sequence from the history list first.")
             return
 
-        test_id = self.history_tree.item(selection[0], "values")[0]
-        filepath = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG files", "*.png")], title="Save History Graph As...", initialfile=f"test_graph_{test_id}.png")
+        filepath = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG files", "*.png")], title="Save History Graph As...", initialfile=initial_file)
         if not filepath: return
         try:
             self.history_fig.savefig(filepath, dpi=300)
@@ -782,12 +1034,17 @@ class DepassivationApp:
             messagebox.showerror("Error", f"Failed to save graph: {e}")
 
     def export_history_data(self):
-        selection = self.history_tree.selection()
-        if not selection:
+        if self.current_sequence_info:
+            test_id = self.current_sequence_info[self.history_graph_view if self.history_graph_view == 'depassivation' else 'baseline']['id']
+            if self.history_graph_view == 'comparison':
+                messagebox.showwarning("Warning", "CSV export for comparison view is not supported. Please select a single test or the depassivation view.")
+                return
+        elif self.selected_history_test_id:
+            test_id = self.selected_history_test_id
+        else:
             messagebox.showwarning("Warning", "Please select a test from the history list first.")
             return
 
-        test_id = self.history_tree.item(selection[0], "values")[0]
         test_data = self.data_handler.get_test_data(test_id)
         if not test_data:
             messagebox.showwarning("Warning", "No data points found for the selected test.")
