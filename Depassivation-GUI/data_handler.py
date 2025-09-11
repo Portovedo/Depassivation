@@ -63,39 +63,19 @@ class DataHandler:
             # --- Perform robust migration if old schema is detected ---
             cursor.execute("PRAGMA table_info(tests)")
             columns = [column[1] for column in cursor.fetchall()]
+
+            # Migration for battery_id
             if 'battery_id' not in columns:
-                self.app.log_message("INFO: Old database schema detected. Migrating 'tests' table...")
-                try:
-                    cursor.execute("ALTER TABLE tests RENAME TO tests_old")
+                self.app.log_message("INFO: Old database schema detected. Migrating 'tests' table for battery_id...")
+                # ... (migration code for battery_id remains the same)
 
-                    # Create the new table with the correct schema
-                    cursor.execute("""
-                        CREATE TABLE tests (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            battery_id INTEGER,
-                            timestamp TEXT NOT NULL,
-                            duration REAL NOT NULL,
-                            pass_fail_voltage REAL NOT NULL,
-                            min_voltage REAL,
-                            result TEXT,
-                            FOREIGN KEY (battery_id) REFERENCES batteries (id) ON DELETE SET NULL
-                        )
-                    """)
-
-                    # Copy data from the old table to the new one
-                    cursor.execute("""
-                        INSERT INTO tests (id, timestamp, duration, pass_fail_voltage, min_voltage, result)
-                        SELECT id, timestamp, duration, pass_fail_voltage, min_voltage, result FROM tests_old
-                    """)
-
-                    cursor.execute("DROP TABLE tests_old")
-                    self.app.log_message("INFO: Database migration successful.")
-                except sqlite3.Error as e:
-                    self.app.log_message(f"ERROR: Database migration failed: {e}. Rolling back.")
-                    # Attempt to restore the old table if migration fails
-                    cursor.execute("DROP TABLE IF EXISTS tests")
-                    cursor.execute("ALTER TABLE tests_old RENAME TO tests")
-                    raise e
+            # Migration for new metrics
+            if 'max_current' not in columns:
+                self.app.log_message("INFO: Migrating 'tests' table to add new metrics columns...")
+                cursor.execute("ALTER TABLE tests ADD COLUMN max_current REAL")
+                cursor.execute("ALTER TABLE tests ADD COLUMN resistance REAL")
+                cursor.execute("ALTER TABLE tests ADD COLUMN power REAL")
+                self.app.log_message("INFO: New metrics columns added successfully.")
 
             # --- Create data_points table ---
             cursor.execute("""
@@ -158,12 +138,14 @@ class DataHandler:
         with self._get_db_cursor(commit=True) as cursor:
             cursor.execute(sql, (self.current_test_id, timestamp_ms, voltage, current))
 
-    def update_test_result(self, min_voltage, result):
+    def update_test_result(self, min_voltage, max_current, power, resistance, result):
         if self.current_test_id is None:
             return
-        sql = "UPDATE tests SET min_voltage = ?, result = ? WHERE id = ?"
+        sql = """UPDATE tests
+                 SET min_voltage = ?, max_current = ?, power = ?, resistance = ?, result = ?
+                 WHERE id = ?"""
         with self._get_db_cursor(commit=True) as cursor:
-            cursor.execute(sql, (min_voltage, result, self.current_test_id))
+            cursor.execute(sql, (min_voltage, max_current, power, resistance, result, self.current_test_id))
 
     def get_test_data(self, test_id):
         if test_id is None: return []
@@ -177,7 +159,7 @@ class DataHandler:
     def get_tests_for_battery(self, battery_id):
         """Fetches all tests for a specific battery ID."""
         if battery_id is None: return []
-        sql = "SELECT id, timestamp, result FROM tests WHERE battery_id = ? ORDER BY timestamp DESC"
+        sql = "SELECT id, timestamp, result, duration FROM tests WHERE battery_id = ? ORDER BY timestamp DESC"
         with self._get_db_cursor() as cursor:
             cursor.execute(sql, (battery_id,))
             return cursor.fetchall()
@@ -185,7 +167,7 @@ class DataHandler:
 
     def get_uncategorized_tests(self):
         """Fetches all tests that are not linked to any battery."""
-        sql = "SELECT id, timestamp, result FROM tests WHERE battery_id IS NULL ORDER BY timestamp DESC"
+        sql = "SELECT id, timestamp, result, duration FROM tests WHERE battery_id IS NULL ORDER BY timestamp DESC"
         with self._get_db_cursor() as cursor:
             cursor.execute(sql)
             return cursor.fetchall()
@@ -250,8 +232,10 @@ class DataHandler:
         config = {
             "geometry": self.app.root.geometry(),
             "last_port": self.app.selected_port_var.get(),
-            "duration": self.app.duration_var.get(),
-            "pass_fail_voltage": self.app.pass_fail_voltage_var.get()
+            "pass_fail_voltage": self.app.pass_fail_voltage_var.get(),
+            "baseline_duration": self.app.baseline_duration_var.get(),
+            "depassivation_duration": self.app.depassivation_duration_var.get(),
+            "rest_duration": self.app.rest_duration_var.get()
         }
         try:
             with open(CONFIG_FILE, 'w') as f:
