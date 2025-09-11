@@ -13,7 +13,6 @@ class DataHandler:
         self.app = app
         self.profiles = {}
         self.current_test_id = None
-        self._init_database()
 
     @contextmanager
     def _get_db_cursor(self, commit=False, row_factory=None):
