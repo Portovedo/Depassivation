@@ -43,7 +43,7 @@ const int BTN_MEASURE_PIN = 34;
 Adafruit_INA219 ina219;
 
 // --- State Machine ---
-enum State { IDLE, TEST_RUNNING, LIVE_VIEW, SUCCESS, FAILED };
+enum State { IDLE, TEST_RUNNING, FINISHING, LIVE_VIEW, SUCCESS, FAILED };
 State currentState = IDLE;
 
 // --- Timing and Test Variables ---
@@ -113,13 +113,21 @@ void loop() {
 
     switch (currentState) {
         case TEST_RUNNING:
+            // If the test duration has passed, move to the FINISHING state
             if (millis() - processStartTime >= depassivationDurationMs) {
-                stopDepassivationProcess("Process completed successfully.");
-                setState(SUCCESS);
+                setState(FINISHING);
             }
+            // Continue taking measurements during the test
             if (millis() - lastMeasurementTime >= measurementIntervalMs) {
                 lastMeasurementTime = millis();
                 measureAndLogTestData();
+            }
+            break;
+        case FINISHING:
+            // Wait 1 extra second with the load on before stopping
+            if (millis() - stateChangeTime > 1000) {
+                stopDepassivationProcess("Process completed successfully.");
+                setState(SUCCESS);
             }
             break;
         case LIVE_VIEW:
@@ -158,6 +166,7 @@ void setState(State newState) {
             digitalWrite(MOSFET_LED_PIN, LOW);
             break;
         case TEST_RUNNING:
+        case FINISHING:
             // Blue will be handled by updateLed for pulsing effect
             break;
         case LIVE_VIEW:
@@ -315,7 +324,8 @@ void setRgbColor(int r, int g, int b) {
 
 void updateLed() {
     switch (currentState) {
-        case TEST_RUNNING: {
+        case TEST_RUNNING:
+        case FINISHING: {
             // Pulsing Blue
             float breath = (sin(millis() / 500.0) + 1.0) / 2.0;
             setRgbColor(0, 0, (int)(breath * 255));
