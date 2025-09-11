@@ -23,6 +23,7 @@ class DataHandler:
             conn = sqlite3.connect(DB_FILE)
             if row_factory:
                 conn.row_factory = row_factory
+            conn.execute("PRAGMA foreign_keys = ON")
             cursor = conn.cursor()
             yield cursor
             if commit:
@@ -37,16 +38,67 @@ class DataHandler:
 
     def _init_database(self):
         with self._get_db_cursor(commit=True) as cursor:
+            # --- Create batteries table for tracking individual batteries ---
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS batteries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL
+                )
+            """)
+
+            # --- Create tests table if it doesn't exist (for fresh installs) ---
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS tests (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    battery_id INTEGER,
                     timestamp TEXT NOT NULL,
                     duration REAL NOT NULL,
                     pass_fail_voltage REAL NOT NULL,
                     min_voltage REAL,
-                    result TEXT
+                    result TEXT,
+                    FOREIGN KEY (battery_id) REFERENCES batteries (id) ON DELETE SET NULL
                 )
             """)
+
+            # --- Perform robust migration if old schema is detected ---
+            cursor.execute("PRAGMA table_info(tests)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if 'battery_id' not in columns:
+                self.app.log_message("INFO: Old database schema detected. Migrating 'tests' table...")
+                try:
+                    cursor.execute("ALTER TABLE tests RENAME TO tests_old")
+
+                    # Create the new table with the correct schema
+                    cursor.execute("""
+                        CREATE TABLE tests (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            battery_id INTEGER,
+                            timestamp TEXT NOT NULL,
+                            duration REAL NOT NULL,
+                            pass_fail_voltage REAL NOT NULL,
+                            min_voltage REAL,
+                            result TEXT,
+                            FOREIGN KEY (battery_id) REFERENCES batteries (id) ON DELETE SET NULL
+                        )
+                    """)
+
+                    # Copy data from the old table to the new one
+                    cursor.execute("""
+                        INSERT INTO tests (id, timestamp, duration, pass_fail_voltage, min_voltage, result)
+                        SELECT id, timestamp, duration, pass_fail_voltage, min_voltage, result FROM tests_old
+                    """)
+
+                    cursor.execute("DROP TABLE tests_old")
+                    self.app.log_message("INFO: Database migration successful.")
+                except sqlite3.Error as e:
+                    self.app.log_message(f"ERROR: Database migration failed: {e}. Rolling back.")
+                    # Attempt to restore the old table if migration fails
+                    cursor.execute("DROP TABLE IF EXISTS tests")
+                    cursor.execute("ALTER TABLE tests_old RENAME TO tests")
+                    raise e
+
+            # --- Create data_points table ---
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS data_points (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,14 +110,45 @@ class DataHandler:
                 )
             """)
 
-    def create_new_test(self, duration, pass_fail_voltage):
+    # --- NEW Battery Management Methods ---
+    def create_battery(self, name):
+        """Creates a new battery profile. Returns the ID of the new battery or None on failure."""
+        if not name:
+            self.app.log_message("ERROR: Battery name cannot be empty.")
+            return None
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        sql = "INSERT INTO tests (timestamp, duration, pass_fail_voltage) VALUES (?, ?, ?)"
+        sql = "INSERT INTO batteries (name, created_at) VALUES (?, ?)"
+        try:
+            with self._get_db_cursor(commit=True) as cursor:
+                cursor.execute(sql, (name, timestamp))
+                self.app.log_message(f"INFO: Registered new battery: {name}")
+                return cursor.lastrowid
+        except sqlite3.IntegrityError:
+            self.app.log_message(f"ERROR: Battery with name '{name}' already exists.")
+            return None
+
+    def get_all_batteries(self):
+        """Returns a list of all batteries, ordered by name."""
+        sql = "SELECT id, name FROM batteries ORDER BY name ASC"
+        with self._get_db_cursor(row_factory=sqlite3.Row) as cursor:
+            cursor.execute(sql)
+            return cursor.fetchall()
+        return []
+
+    # --- MODIFIED Test Management Methods ---
+    def create_new_test(self, battery_id, duration, pass_fail_voltage):
+        """Creates a new test record linked to a specific battery."""
+        if battery_id is None:
+            self.app.log_message("ERROR: Cannot create test without a selected battery.")
+            return None
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        sql = "INSERT INTO tests (battery_id, timestamp, duration, pass_fail_voltage) VALUES (?, ?, ?, ?)"
 
         with self._get_db_cursor(commit=True) as cursor:
-            cursor.execute(sql, (timestamp, duration, pass_fail_voltage))
+            cursor.execute(sql, (battery_id, timestamp, duration, pass_fail_voltage))
             self.current_test_id = cursor.lastrowid
-            self.app.log_message(f"INFO: Started new test with ID: {self.current_test_id}")
+            self.app.log_message(f"INFO: Started new test (ID: {self.current_test_id}) for battery ID: {battery_id}")
             return self.current_test_id
         return None
 
@@ -92,8 +175,18 @@ class DataHandler:
             return [(ts / 1000.0, v, c) for ts, v, c in data]
         return []
 
-    def get_all_tests_summary(self):
-        sql = "SELECT id, timestamp, result FROM tests ORDER BY timestamp DESC"
+    def get_tests_for_battery(self, battery_id):
+        """Fetches all tests for a specific battery ID."""
+        if battery_id is None: return []
+        sql = "SELECT id, timestamp, result FROM tests WHERE battery_id = ? ORDER BY timestamp DESC"
+        with self._get_db_cursor() as cursor:
+            cursor.execute(sql, (battery_id,))
+            return cursor.fetchall()
+        return []
+
+    def get_uncategorized_tests(self):
+        """Fetches all tests that are not linked to any battery."""
+        sql = "SELECT id, timestamp, result FROM tests WHERE battery_id IS NULL ORDER BY timestamp DESC"
         with self._get_db_cursor() as cursor:
             cursor.execute(sql)
             return cursor.fetchall()
@@ -112,29 +205,36 @@ class DataHandler:
         sql = "DELETE FROM tests WHERE id = ?"
         with self._get_db_cursor(commit=True) as cursor:
             cursor.execute(sql, (test_id,))
-            # The ON DELETE CASCADE will handle the data_points table
             return cursor.rowcount > 0
         return False
 
+    def delete_battery(self, battery_id):
+        if battery_id is None: return False
+        # 'ON DELETE SET NULL' on the tests table will handle disassociating tests.
+        sql = "DELETE FROM batteries WHERE id = ?"
+        with self._get_db_cursor(commit=True) as cursor:
+            cursor.execute(sql, (battery_id,))
+            self.app.log_message(f"INFO: Deleted battery ID: {battery_id}. Associated tests are now uncategorized.")
+            return cursor.rowcount > 0
+        return False
+
+    # --- Unchanged Profile and Config Methods ---
     def load_profiles(self):
         if os.path.exists(PROFILES_FILE):
             try:
                 with open(PROFILES_FILE, 'r') as f:
                     self.profiles = json.load(f)
-                    self.app.log_message(f"INFO: Loaded {len(self.profiles)} profiles from {PROFILES_FILE}")
             except (json.JSONDecodeError, IOError) as e:
                 self.app.log_message(f"ERROR: Could not load profiles file: {e}")
                 self.profiles = {}
         else:
             self.profiles = {}
-            self.app.log_message(f"INFO: No profiles file found. Starting with empty profiles.")
         return self.profiles
 
     def save_profiles(self):
         try:
             with open(PROFILES_FILE, 'w') as f:
                 json.dump(self.profiles, f, indent=4)
-            self.app.log_message("INFO: Profiles saved successfully.")
         except IOError as e:
             self.app.log_message(f"ERROR: Could not save profiles file: {e}")
 
