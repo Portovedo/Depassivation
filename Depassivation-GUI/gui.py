@@ -125,7 +125,6 @@ class DepassivationApp:
         self.selected_history_test_id = None
         self.current_history_sequences = {}
         self.current_sequence_info = None
-        self.history_graph_view = 'comparison'
         self.data_points = []
         self.min_voltage = 0.0
         self.max_current = 0.0
@@ -270,18 +269,27 @@ class DepassivationApp:
         details_frame.grid(row=0, column=1, rowspan=2, sticky="nswe", padx=(5, 0))
         details_frame.grid_columnconfigure(0, weight=1)
         details_frame.grid_rowconfigure(0, weight=1)
-        history_graph_frame = ttk.LabelFrame(details_frame, text="Test Graph", padding="10")
-        history_graph_frame.grid(row=0, column=0, sticky="ew")
-        self.history_fig = Figure(figsize=(5, 3), dpi=100)
-        self.history_ax = self.history_fig.add_subplot(111)
-        self.history_canvas = FigureCanvasTkAgg(self.history_fig, master=history_graph_frame)
-        self.history_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        self.graph_toggle_button = ttk.Button(history_graph_frame, text="Show Depassivation Cycle", command=self.toggle_history_graph_view)
-        # This button is packed/unpacked dynamically
+        details_frame.grid_rowconfigure(1, weight=1)
+
+        # Graph 1: Depassivation
+        graph1_frame = ttk.LabelFrame(details_frame, text="Depassivation Cycle", padding="10")
+        graph1_frame.grid(row=0, column=0, sticky="nsew")
+        self.history_fig1 = Figure(figsize=(5, 2.5), dpi=100)
+        self.history_ax1 = self.history_fig1.add_subplot(111)
+        self.history_canvas1 = FigureCanvasTkAgg(self.history_fig1, master=graph1_frame)
+        self.history_canvas1.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        # Graph 2: Baseline vs. Check
+        graph2_frame = ttk.LabelFrame(details_frame, text="Baseline vs. Check", padding="10")
+        graph2_frame.grid(row=1, column=0, sticky="nsew", pady=(5,0))
+        self.history_fig2 = Figure(figsize=(5, 2.5), dpi=100)
+        self.history_ax2 = self.history_fig2.add_subplot(111)
+        self.history_canvas2 = FigureCanvasTkAgg(self.history_fig2, master=graph2_frame)
+        self.history_canvas2.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
         # This container will hold either the single test stats or the comparison stats
         history_stats_container = ttk.Frame(details_frame)
-        history_stats_container.grid(row=1, column=0, sticky="ew", pady=(5, 0))
+        history_stats_container.grid(row=2, column=0, sticky="ew", pady=(5, 0))
         history_stats_container.grid_columnconfigure(0, weight=1)
         history_stats_container.grid_rowconfigure(0, weight=1)
 
@@ -310,32 +318,28 @@ class DepassivationApp:
         self.delete_history_button.pack(pady=(10,0))
 
         # --- Sequence Comparison View ---
-        self.history_comparison_frame = ttk.LabelFrame(history_stats_container, text="Sequence Comparison", padding="10")
+        self.history_comparison_frame = ttk.LabelFrame(history_stats_container, text="Sequence Metrics", padding="10")
         self.history_comparison_frame.grid(row=0, column=0, sticky="nsew")
 
-        ttk.Label(self.history_comparison_frame, text="Metric", font=('Helvetica', 10, 'bold')).grid(row=0, column=0, padx=5, pady=2, sticky='w')
-        ttk.Label(self.history_comparison_frame, text="Baseline (1)", font=('Helvetica', 10, 'bold')).grid(row=0, column=1, padx=5, pady=2, sticky='w')
-        ttk.Label(self.history_comparison_frame, text="Check (3)", font=('Helvetica', 10, 'bold')).grid(row=0, column=2, padx=5, pady=2, sticky='w')
-        ttk.Label(self.history_comparison_frame, text="Change", font=('Helvetica', 10, 'bold')).grid(row=0, column=3, padx=5, pady=2, sticky='w')
+        # Define headers
+        headers = ["Metric", "Baseline (1)", "Depassivation (2)", "Check (3)"]
+        for col, header in enumerate(headers):
+            ttk.Label(self.history_comparison_frame, text=header, font=('Helvetica', 10, 'bold')).grid(row=0, column=col, padx=5, pady=2, sticky='w')
 
         self.comparison_labels = {}
-        metrics = ["Min Voltage", "Max Current", "Resistance"]
-        for i, metric in enumerate(metrics, 1):
-            ttk.Label(self.history_comparison_frame, text=f"{metric}:").grid(row=i, column=0, sticky='w', padx=5, pady=2)
-            self.comparison_labels[f'baseline_{metric.lower().replace(" ", "_")}'] = ttk.Label(self.history_comparison_frame, text="--")
-            self.comparison_labels[f'baseline_{metric.lower().replace(" ", "_")}'].grid(row=i, column=1, sticky='w', padx=5)
-            self.comparison_labels[f'check_{metric.lower().replace(" ", "_")}'] = ttk.Label(self.history_comparison_frame, text="--")
-            self.comparison_labels[f'check_{metric.lower().replace(" ", "_")}'].grid(row=i, column=2, sticky='w', padx=5)
-            self.comparison_labels[f'change_{metric.lower().replace(" ", "_")}'] = ttk.Label(self.history_comparison_frame, text="--")
-            self.comparison_labels[f'change_{metric.lower().replace(" ", "_")}'].grid(row=i, column=3, sticky='w', padx=5)
+        self.metrics_to_display = ["Test ID", "Timestamp", "Duration", "Max Voltage", "Min Voltage", "Last Voltage"]
 
-        ttk.Separator(self.history_comparison_frame, orient='horizontal').grid(row=len(metrics)+1, column=0, columnspan=4, sticky='ew', pady=10)
-        self.comparison_summary_label = ttk.Label(self.history_comparison_frame, text="Summary: --", font=('Helvetica', 11, 'bold'))
-        self.comparison_summary_label.grid(row=len(metrics)+2, column=0, columnspan=4, sticky='w', padx=5, pady=5)
+        for i, metric_name in enumerate(self.metrics_to_display, 1):
+            ttk.Label(self.history_comparison_frame, text=f"{metric_name}:").grid(row=i, column=0, sticky='w', padx=5, pady=2)
+            for j, cycle in enumerate(["baseline", "depassivation", "check"], 1):
+                label_key = f'{cycle}_{metric_name.lower().replace(" ", "_")}'
+                label = ttk.Label(self.history_comparison_frame, text="--")
+                label.grid(row=i, column=j, sticky='w', padx=5)
+                self.comparison_labels[label_key] = label
 
         self.history_stats_frame.tkraise()
         export_frame = ttk.Frame(details_frame, padding=(0, 10))
-        export_frame.grid(row=2, column=0, sticky="ew", pady=5)
+        export_frame.grid(row=3, column=0, sticky="ew", pady=5)
         self.export_history_graph_button = ttk.Button(export_frame, text="Export Graph (.png)", command=self.export_history_graph, state=tk.DISABLED)
         self.export_history_graph_button.pack(side="left", expand=True, fill="x", padx=(0,5))
         self.export_history_data_button = ttk.Button(export_frame, text="Export Data (.csv)", command=self.export_history_data, state=tk.DISABLED)
@@ -912,7 +916,6 @@ class DepassivationApp:
         self.selected_history_test_id = None
         self.current_sequence_info = None
         self.history_stats_frame.tkraise()
-        self.graph_toggle_button.pack_forget()
         self.history_id_label.config(text="Test ID: --")
         self.history_timestamp_label.config(text="Timestamp: --")
         self.history_duration_label.config(text="Duration: -- s")
@@ -922,15 +925,17 @@ class DepassivationApp:
         self.history_power_label.config(text="Power: -- mW")
         self.history_resistance_label.config(text="Resistance: -- Ω")
         self.history_result_label.config(text="Result: --")
-        self.history_ax.cla()
-        self.history_ax.grid(True)
-        self.history_canvas.draw()
+        self.history_ax1.cla()
+        self.history_ax1.grid(True)
+        self.history_canvas1.draw()
+        self.history_ax2.cla()
+        self.history_ax2.grid(True)
+        self.history_canvas2.draw()
         self.export_history_graph_button.config(state=tk.DISABLED)
         self.export_history_data_button.config(state=tk.DISABLED)
 
     def show_history_details(self, selected_item):
         self.history_stats_frame.tkraise()
-        self.graph_toggle_button.pack_forget()
         self.current_sequence_info = None
 
         test_id = self.history_tree.item(selected_item, "values")[0]
@@ -951,109 +956,116 @@ class DepassivationApp:
         self.history_resistance_label.config(text=f"Resistance: {summary['resistance']:.2f} Ω" if summary['resistance'] is not None else "--")
         self.history_result_label.config(text=f"Result: {summary['result'] or 'N/A'}")
 
-        self.history_ax.cla()
+        self.history_ax1.cla()
         if data_points:
             self.export_history_graph_button.config(state=tk.NORMAL)
             self.export_history_data_button.config(state=tk.NORMAL)
             times, voltages, _ = zip(*data_points)
-            self.history_ax.plot(times, voltages, marker='o', linestyle='-')
+            self.history_ax1.plot(times, voltages, marker='o', linestyle='-')
         else:
             self.export_history_graph_button.config(state=tk.DISABLED)
             self.export_history_data_button.config(state=tk.DISABLED)
-        self.history_ax.set_title(f"Test Data (ID: {test_id})")
-        self.history_ax.set_xlabel("Time (s)")
-        self.history_ax.set_ylabel("Voltage (V)")
-        self.history_ax.set_ylim(0, 5)
-        self.history_ax.set_xlim(0, summary['duration'])
-        self.history_ax.grid(True)
-        self.history_fig.tight_layout()
-        self.history_canvas.draw()
+        self.history_ax1.set_title(f"Test Data (ID: {test_id})")
+        self.history_ax1.set_xlabel("Time (s)")
+        self.history_ax1.set_ylabel("Voltage (V)")
+        self.history_ax1.set_ylim(0, 5)
+        self.history_ax1.set_xlim(0, summary['duration'])
+        self.history_ax1.grid(True)
+        self.history_fig1.tight_layout()
+        self.history_canvas1.draw()
+        self.history_ax2.cla()
+        self.history_ax2.grid(True)
+        self.history_canvas2.draw()
 
     def show_sequence_details(self, sequence_info):
         self.history_comparison_frame.tkraise()
         self.current_sequence_info = sequence_info
         self.selected_history_test_id = None # Not a single test
-        self.history_graph_view = 'comparison'
         self._plot_sequence_graph()
-        self.graph_toggle_button.config(text="Show Check Cycle (3)")
-        self.graph_toggle_button.pack(pady=(5,0), fill='x')
 
         s1 = self.data_handler.get_test_summary(sequence_info['baseline']['id'])
         s2 = self.data_handler.get_test_summary(sequence_info['depassivation']['id'])
+        s3 = self.data_handler.get_test_summary(sequence_info['check']['id'])
+        d1 = self.data_handler.get_test_data(s1['id'])
+        d3 = self.data_handler.get_test_data(s3['id'])
 
-        # Update the labels in the comparison table header
-        ttk.Label(self.history_comparison_frame, text="Baseline (1)", font=('Helvetica', 10, 'bold')).grid(row=0, column=1, padx=5, pady=2, sticky='w')
-        ttk.Label(self.history_comparison_frame, text="Depassivation (2)", font=('Helvetica', 10, 'bold')).grid(row=0, column=2, padx=5, pady=2, sticky='w')
+        last_voltage1 = d1[-1][1] if d1 else None
+        last_voltage3 = d3[-1][1] if d3 else None
 
-        metrics = ["min_voltage", "max_current", "resistance"]
-        formats = [".3f", ".1f", ".2f"]
-        units = ["V", "mA", "Ω"]
+        summaries = {"baseline": s1, "depassivation": s2, "check": s3}
 
-        for i, metric in enumerate(metrics):
-            val1 = s1.get(metric) if s1 else None
-            val2 = s2.get(metric) if s2 else None
+        for cycle, summary in summaries.items():
+            if not summary: continue
 
-            self.comparison_labels[f'baseline_{metric}'].config(text=f"{val1:{formats[i]}} {units[i]}" if val1 is not None else "--")
-            self.comparison_labels[f'check_{metric}'].config(text=f"{val2:{formats[i]}} {units[i]}" if val2 is not None else "--") # Re-using 'check' label for 2nd cycle
+            self.comparison_labels[f'{cycle}_test_id'].config(text=summary['id'])
+            self.comparison_labels[f'{cycle}_timestamp'].config(text=summary['timestamp'])
+            self.comparison_labels[f'{cycle}_duration'].config(text=f"{summary['duration']} s")
+            self.comparison_labels[f'{cycle}_max_voltage'].config(text=f"{summary['max_current']:.1f} mA" if summary['max_current'] is not None else "--")
+            self.comparison_labels[f'{cycle}_min_voltage'].config(text=f"{summary['min_voltage']:.3f} V" if summary['min_voltage'] is not None else "--")
 
-            if val1 is not None and val2 is not None:
-                change = val2 - val1
-                percent_change = (change / val1 * 100) if val1 != 0 else 0
-                sign = "+" if change > 0 else ""
-                self.comparison_labels[f'change_{metric}'].config(text=f"{sign}{change:{formats[i]}} ({sign}{percent_change:.1f}%)")
-            else:
-                 self.comparison_labels[f'change_{metric}'].config(text="--")
+        self.comparison_labels['baseline_last_voltage'].config(text=f"{last_voltage1:.3f} V" if last_voltage1 is not None else "--")
+        self.comparison_labels['check_last_voltage'].config(text=f"{last_voltage3:.3f} V" if last_voltage3 is not None else "--")
 
-        self.comparison_summary_label.config(text=f"Rest time before Check cycle: {sequence_info.get('rest_time', 'N/A')}")
+        # Result Section
+        if last_voltage1 is not None and last_voltage3 is not None:
+            diff = last_voltage3 - last_voltage1
+            color = "green" if diff > 0 else "red"
 
-    def toggle_history_graph_view(self):
-        if not self.current_sequence_info: return
+            result_text = f"Last Voltage 1st Cycle: {last_voltage1:.3f} V\n"
+            result_text += f"Last Voltage 3rd Cycle: {last_voltage3:.3f} V\n"
+            result_text += f"Difference: {diff:+.3f} V"
 
-        if self.history_graph_view == 'comparison':
-            self.history_graph_view = 'check'
-            self.graph_toggle_button.config(text="Show Comparison Graph (1 vs 2)")
-        else:
-            self.history_graph_view = 'comparison'
-            self.graph_toggle_button.config(text="Show Check Cycle (3)")
-        self._plot_sequence_graph()
+            result_label = ttk.Label(self.history_comparison_frame, text=result_text, foreground=color, font=('Helvetica', 11, 'bold'))
+            result_label.grid(row=len(self.metrics_to_display)+2, column=0, columnspan=4, sticky='w', padx=5, pady=10)
 
     def _plot_sequence_graph(self):
         if not self.current_sequence_info: return
-        self.history_ax.cla()
+        self.history_ax1.cla()
+        self.history_ax2.cla()
 
-        if self.history_graph_view == 'comparison':
-            s1 = self.data_handler.get_test_summary(self.current_sequence_info['baseline']['id'])
-            d1 = self.data_handler.get_test_data(s1['id'])
-            s2 = self.data_handler.get_test_summary(self.current_sequence_info['depassivation']['id'])
-            d2 = self.data_handler.get_test_data(s2['id'])
+        s1 = self.data_handler.get_test_summary(self.current_sequence_info['baseline']['id'])
+        d1 = self.data_handler.get_test_data(s1['id'])
+        s2 = self.data_handler.get_test_summary(self.current_sequence_info['depassivation']['id'])
+        d2 = self.data_handler.get_test_data(s2['id'])
+        s3 = self.data_handler.get_test_summary(self.current_sequence_info['check']['id'])
+        d3 = self.data_handler.get_test_data(s3['id'])
 
-            if d1:
-                t, v, _ = zip(*d1)
-                self.history_ax.plot(t, v, marker='.', linestyle='-', label=f"Baseline (ID: {s1['id']})")
-            if d2:
-                t, v, _ = zip(*d2)
-                self.history_ax.plot(t, v, marker='.', linestyle='-', label=f"Depassivation (ID: {s2['id']})")
+        # Plot 1: Depassivation cycle
+        if d2:
+            t, v, _ = zip(*d2)
+            self.history_ax1.plot(t, v, marker='.', linestyle='-', label=f"Depassivation (ID: {s2['id']})", color='orange')
+            self.history_ax1.set_xlim(0, s2['duration'])
 
-            self.history_ax.set_title("Sequence: Baseline vs. Depassivation")
-            self.history_ax.legend()
-            self.history_ax.set_xlim(0, max(s1['duration'], s2['duration']))
+        self.history_ax1.set_title("Depassivation Cycle")
+        self.history_ax1.set_xlabel("Time (s)")
+        self.history_ax1.set_ylabel("Voltage (V)")
+        self.history_ax1.set_ylim(0, 5)
+        self.history_ax1.grid(True)
+        self.history_ax1.legend()
+        self.history_fig1.tight_layout()
+        self.history_canvas1.draw()
 
-        else: # 'check' view
-            s3 = self.data_handler.get_test_summary(self.current_sequence_info['check']['id'])
-            d3 = self.data_handler.get_test_data(s3['id'])
-            if d3:
-                t, v, _ = zip(*d3)
-                self.history_ax.plot(t, v, marker='.', linestyle='-', color='green', label=f"Check (ID: {s3['id']})")
-            self.history_ax.set_title(f"Sequence: Check Cycle (ID: {s3['id']})")
-            self.history_ax.legend()
-            self.history_ax.set_xlim(0, s3['duration'])
+        # Plot 2: Baseline vs. Check
+        max_duration = 0
+        if d1:
+            t, v, _ = zip(*d1)
+            self.history_ax2.plot(t, v, marker='.', linestyle='-', label=f"Baseline (ID: {s1['id']})", color='blue')
+            max_duration = max(max_duration, s1['duration'])
+        if d3:
+            t, v, _ = zip(*d3)
+            self.history_ax2.plot(t, v, marker='.', linestyle='-', label=f"Check (ID: {s3['id']})", color='green')
+            max_duration = max(max_duration, s3['duration'])
 
-        self.history_ax.set_xlabel("Time (s)")
-        self.history_ax.set_ylabel("Voltage (V)")
-        self.history_ax.set_ylim(0, 5)
-        self.history_ax.grid(True)
-        self.history_fig.tight_layout()
-        self.history_canvas.draw()
+        self.history_ax2.set_title("Baseline vs. Check")
+        self.history_ax2.set_xlabel("Time (s)")
+        self.history_ax2.set_ylabel("Voltage (V)")
+        self.history_ax2.set_ylim(0, 5)
+        if max_duration > 0:
+            self.history_ax2.set_xlim(0, max_duration)
+        self.history_ax2.grid(True)
+        self.history_ax2.legend()
+        self.history_fig2.tight_layout()
+        self.history_canvas2.draw()
 
     def delete_selected_history_test(self):
         selection = self.history_tree.selection()
