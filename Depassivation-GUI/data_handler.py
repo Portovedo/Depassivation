@@ -13,6 +13,7 @@ class DataHandler:
         self.app = app
         self.profiles = {}
         self.current_test_id = None
+        self.current_cycle_id = None
 
     @contextmanager
     def _get_db_cursor(self, commit=False, row_factory=None):
@@ -37,7 +38,7 @@ class DataHandler:
 
     def _init_database(self):
         with self._get_db_cursor(commit=True) as cursor:
-            # --- Create batteries table for tracking individual batteries ---
+            # --- batteries table (kept from old schema) ---
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS batteries (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,67 +47,48 @@ class DataHandler:
                 )
             """)
 
-            # --- Create tests table if it doesn't exist (for fresh installs) ---
+            # --- tests table (new schema) ---
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS tests (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     battery_id INTEGER,
                     timestamp TEXT NOT NULL,
-                    duration REAL NOT NULL,
-                    pass_fail_voltage REAL NOT NULL,
-                    min_voltage REAL,
-                    result TEXT,
+                    profile_name TEXT,
                     FOREIGN KEY (battery_id) REFERENCES batteries (id) ON DELETE SET NULL
                 )
             """)
 
-            # --- Perform robust migration if old schema is detected ---
-            cursor.execute("PRAGMA table_info(tests)")
-            columns = [column[1] for column in cursor.fetchall()]
-
-            if 'battery_id' not in columns:
-                # This migration logic is complex and was part of a previous feature.
-                # It's kept here for compatibility with very old database schemas.
-                self.app.log_message("INFO: Old database schema detected. Migrating 'tests' table for battery_id...")
-                try:
-                    cursor.execute("ALTER TABLE tests RENAME TO tests_old")
-                    cursor.execute("""
-                        CREATE TABLE tests (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT, battery_id INTEGER, timestamp TEXT NOT NULL,
-                            duration REAL NOT NULL, pass_fail_voltage REAL NOT NULL, min_voltage REAL, result TEXT,
-                            FOREIGN KEY (battery_id) REFERENCES batteries (id) ON DELETE SET NULL ) """)
-                    cursor.execute("""
-                        INSERT INTO tests (id, timestamp, duration, pass_fail_voltage, min_voltage, result)
-                        SELECT id, timestamp, duration, pass_fail_voltage, min_voltage, result FROM tests_old """)
-                    cursor.execute("DROP TABLE tests_old")
-                    self.app.log_message("INFO: Database migration for battery_id successful.")
-                except sqlite3.Error as e:
-                    self.app.log_message(f"ERROR: Database migration failed: {e}. Rolling back.")
-                    cursor.execute("DROP TABLE IF EXISTS tests")
-                    cursor.execute("ALTER TABLE tests_old RENAME TO tests")
-                    raise e
-
-            # Migration for new metrics columns
-            if 'max_current' not in columns:
-                self.app.log_message("INFO: Migrating 'tests' table to add new metrics columns...")
-                cursor.execute("ALTER TABLE tests ADD COLUMN max_current REAL")
-                cursor.execute("ALTER TABLE tests ADD COLUMN resistance REAL")
-                cursor.execute("ALTER TABLE tests ADD COLUMN power REAL")
-                self.app.log_message("INFO: New metrics columns added successfully.")
-
-            # --- Create data_points table ---
+            # --- cycles table (new schema) ---
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS data_points (
+                CREATE TABLE IF NOT EXISTS cycles (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     test_id INTEGER NOT NULL,
-                    timestamp_ms INTEGER NOT NULL,
-                    voltage REAL NOT NULL,
-                    current REAL NOT NULL,
+                    cycle_type TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    duration REAL,
+                    pass_fail_voltage REAL,
+                    min_voltage REAL,
+                    max_current REAL,
+                    power REAL,
+                    resistance REAL,
+                    result TEXT,
                     FOREIGN KEY (test_id) REFERENCES tests (id) ON DELETE CASCADE
                 )
             """)
 
-    # --- NEW Battery Management Methods ---
+            # --- readings table (new schema) ---
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS readings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    cycle_id INTEGER NOT NULL,
+                    timestamp_ms INTEGER NOT NULL,
+                    voltage REAL NOT NULL,
+                    current REAL NOT NULL,
+                    FOREIGN KEY (cycle_id) REFERENCES cycles (id) ON DELETE CASCADE
+                )
+            """)
+
+    # --- Battery Management Methods ---
     def create_battery(self, name):
         """Creates a new battery profile. Returns the ID of the new battery or None on failure."""
         if not name:
@@ -131,44 +113,62 @@ class DataHandler:
             return cursor.fetchall()
         return []
 
-    # --- MODIFIED Test Management Methods ---
-    def create_new_test(self, battery_id, duration, pass_fail_voltage):
-        """Creates a new test record linked to a specific battery."""
+    # --- Test and Cycle Management Methods ---
+    def create_new_test(self, battery_id, profile_name=None):
+        """Creates a new test record."""
         if battery_id is None:
             self.app.log_message("ERROR: Cannot create test without a selected battery.")
             return None
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        sql = "INSERT INTO tests (battery_id, timestamp, duration, pass_fail_voltage) VALUES (?, ?, ?, ?)"
+        sql = "INSERT INTO tests (battery_id, timestamp, profile_name) VALUES (?, ?, ?)"
 
         with self._get_db_cursor(commit=True) as cursor:
-            cursor.execute(sql, (battery_id, timestamp, duration, pass_fail_voltage))
+            cursor.execute(sql, (battery_id, timestamp, profile_name))
             self.current_test_id = cursor.lastrowid
             self.app.log_message(f"INFO: Started new test (ID: {self.current_test_id}) for battery ID: {battery_id}")
             return self.current_test_id
         return None
 
-    def log_data_point(self, timestamp_ms, voltage, current):
-        if self.current_test_id is None:
-            return
-        sql = "INSERT INTO data_points (test_id, timestamp_ms, voltage, current) VALUES (?, ?, ?, ?)"
-        with self._get_db_cursor(commit=True) as cursor:
-            cursor.execute(sql, (self.current_test_id, timestamp_ms, voltage, current))
+    def create_new_cycle(self, test_id, cycle_type, duration, pass_fail_voltage):
+        """Creates a new cycle record linked to a test."""
+        if test_id is None:
+            self.app.log_message("ERROR: Cannot create cycle without a test ID.")
+            return None
 
-    def update_test_result(self, min_voltage, max_current, power, resistance, result):
-        if self.current_test_id is None:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        sql = "INSERT INTO cycles (test_id, cycle_type, timestamp, duration, pass_fail_voltage) VALUES (?, ?, ?, ?, ?)"
+        with self._get_db_cursor(commit=True) as cursor:
+            cursor.execute(sql, (test_id, cycle_type, timestamp, duration, pass_fail_voltage))
+            self.current_cycle_id = cursor.lastrowid
+            self.app.log_message(f"INFO: Started new cycle (ID: {self.current_cycle_id}, Type: {cycle_type}) for test ID: {test_id}")
+            return self.current_cycle_id
+        return None
+
+    def log_reading(self, cycle_id, timestamp_ms, voltage, current):
+        """Logs a single data point for a cycle."""
+        if cycle_id is None:
             return
-        sql = """UPDATE tests
+        sql = "INSERT INTO readings (cycle_id, timestamp_ms, voltage, current) VALUES (?, ?, ?, ?)"
+        with self._get_db_cursor(commit=True) as cursor:
+            cursor.execute(sql, (cycle_id, timestamp_ms, voltage, current))
+
+    def update_cycle_result(self, cycle_id, min_voltage, max_current, power, resistance, result):
+        """Updates a cycle with its final results."""
+        if cycle_id is None:
+            return
+        sql = """UPDATE cycles
                  SET min_voltage = ?, max_current = ?, power = ?, resistance = ?, result = ?
                  WHERE id = ?"""
         with self._get_db_cursor(commit=True) as cursor:
-            cursor.execute(sql, (min_voltage, max_current, power, resistance, result, self.current_test_id))
+            cursor.execute(sql, (min_voltage, max_current, power, resistance, result, cycle_id))
 
-    def get_test_data(self, test_id):
-        if test_id is None: return []
-        sql = "SELECT timestamp_ms, voltage, current FROM data_points WHERE test_id = ? ORDER BY timestamp_ms ASC"
+    def get_cycle_data(self, cycle_id):
+        """Gets all data points for a specific cycle."""
+        if cycle_id is None: return []
+        sql = "SELECT timestamp_ms, voltage, current FROM readings WHERE cycle_id = ? ORDER BY timestamp_ms ASC"
         with self._get_db_cursor() as cursor:
-            cursor.execute(sql, (test_id,))
+            cursor.execute(sql, (cycle_id,))
             data = cursor.fetchall()
             return [(ts / 1000.0, v, c) for ts, v, c in data]
         return []
@@ -176,16 +176,25 @@ class DataHandler:
     def get_tests_for_battery(self, battery_id):
         """Fetches all tests for a specific battery ID."""
         if battery_id is None: return []
-        sql = "SELECT id, timestamp, result, duration FROM tests WHERE battery_id = ? ORDER BY timestamp ASC"
+        sql = "SELECT id, timestamp, profile_name FROM tests WHERE battery_id = ? ORDER BY timestamp ASC"
         with self._get_db_cursor(row_factory=sqlite3.Row) as cursor:
             cursor.execute(sql, (battery_id,))
+            return cursor.fetchall()
+        return []
+
+    def get_cycles_for_test(self, test_id):
+        """Fetches all cycles for a specific test ID."""
+        if test_id is None: return []
+        sql = "SELECT * FROM cycles WHERE test_id = ? ORDER BY timestamp ASC"
+        with self._get_db_cursor(row_factory=sqlite3.Row) as cursor:
+            cursor.execute(sql, (test_id,))
             return cursor.fetchall()
         return []
 
     def get_last_test_for_battery(self, battery_id):
         """Fetches the most recent test for a specific battery ID."""
         if battery_id is None: return None
-        sql = "SELECT id, timestamp, result, duration FROM tests WHERE battery_id = ? ORDER BY timestamp DESC LIMIT 1"
+        sql = "SELECT * FROM tests WHERE battery_id = ? ORDER BY timestamp DESC LIMIT 1"
         with self._get_db_cursor(row_factory=sqlite3.Row) as cursor:
             cursor.execute(sql, (battery_id,))
             return cursor.fetchone()
@@ -193,7 +202,7 @@ class DataHandler:
 
     def get_uncategorized_tests(self):
         """Fetches all tests that are not linked to any battery."""
-        sql = "SELECT id, timestamp, result, duration FROM tests WHERE battery_id IS NULL ORDER BY timestamp ASC"
+        sql = "SELECT id, timestamp, profile_name FROM tests WHERE battery_id IS NULL ORDER BY timestamp ASC"
         with self._get_db_cursor(row_factory=sqlite3.Row) as cursor:
             cursor.execute(sql)
             return cursor.fetchall()
@@ -207,6 +216,14 @@ class DataHandler:
             return cursor.fetchone()
         return None
 
+    def get_cycle_summary(self, cycle_id):
+        if cycle_id is None: return None
+        sql = "SELECT * FROM cycles WHERE id = ?"
+        with self._get_db_cursor(row_factory=sqlite3.Row) as cursor:
+            cursor.execute(sql, (cycle_id,))
+            return cursor.fetchone()
+        return None
+
     def delete_test(self, test_id):
         if test_id is None: return False
         sql = "DELETE FROM tests WHERE id = ?"
@@ -217,7 +234,6 @@ class DataHandler:
 
     def delete_battery(self, battery_id):
         if battery_id is None: return False
-        # 'ON DELETE SET NULL' on the tests table will handle disassociating tests.
         sql = "DELETE FROM batteries WHERE id = ?"
         with self._get_db_cursor(commit=True) as cursor:
             cursor.execute(sql, (battery_id,))
