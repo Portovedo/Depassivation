@@ -120,7 +120,8 @@ class DepassivationApp:
         self.is_running = False
         self.current_mode = "main"
         self.current_test_id = None
-        self.last_completed_test_id = None
+        self.current_cycle_id = None
+        self.last_completed_cycle_id = None
         self.selected_battery_id = None
         self.selected_history_test_id = None
         self.current_history_sequences = {}
@@ -545,54 +546,58 @@ class DepassivationApp:
 
         if battery and is_ready:
             self.selected_battery_id = battery['id']
-            last_test = self.data_handler.get_last_test_for_battery(self.selected_battery_id)
-
-            if not last_test:
-                # No tests yet, only baseline is allowed.
-                self.baseline_button.config(state=tk.NORMAL)
-            else:
-                result_text = last_test['result'] or ""
-                if "Baseline Test" in result_text:
-                    # After baseline, only depassivation is allowed.
-                    self.depassivation_button.config(state=tk.NORMAL)
-                elif "Depassivation Cycle" in result_text:
-                    # After depassivation, only check is allowed.
-                    self.check_button.config(state=tk.NORMAL)
-                elif "Depassivation Check" in result_text:
-                    # After a full sequence, a new baseline can be started.
-                    self.baseline_button.config(state=tk.NORMAL)
-                else:
-                    # For any other case (e.g., incomplete, aborted), start fresh with a baseline.
-                    self.baseline_button.config(state=tk.NORMAL)
+            # Simplified logic for now. A more robust state machine will be implemented later.
+            # This allows starting any cycle, but a test sequence must be started with a baseline.
+            self.baseline_button.config(state=tk.NORMAL)
+            self.depassivation_button.config(state=tk.NORMAL)
+            self.check_button.config(state=tk.NORMAL)
+            # When a new battery is selected, the current test sequence is reset.
+            self.current_test_id = None
         else:
             self.selected_battery_id = None
+            self.current_test_id = None
 
     def start_baseline_test(self):
-        duration = int(self.baseline_duration_var.get())
-        self._start_test("Baseline Test", duration)
+        # A baseline test always starts a new test sequence
+        self.current_test_id = self.data_handler.create_new_test(self.selected_battery_id)
+        if self.current_test_id:
+            duration = int(self.baseline_duration_var.get())
+            self._start_cycle("Baseline", duration)
 
     def start_depassivation_test(self):
-        duration = int(self.depassivation_duration_var.get())
-        self._start_test("Depassivation Cycle", duration)
+        if self.current_test_id is None:
+            # For now, let's start a new test if one isn't running.
+            # A more robust implementation would guide the user.
+            self.current_test_id = self.data_handler.create_new_test(self.selected_battery_id)
+        if self.current_test_id:
+            duration = int(self.depassivation_duration_var.get())
+            self._start_cycle("Depassivation", duration)
 
     def start_check_test(self):
-        duration = int(self.baseline_duration_var.get())
-        self._start_test("Depassivation Check", duration)
+        if self.current_test_id is None:
+            # For now, let's start a new test if one isn't running.
+            self.current_test_id = self.data_handler.create_new_test(self.selected_battery_id)
+        if self.current_test_id:
+            duration = int(self.baseline_duration_var.get())
+            self._start_cycle("Check", duration)
 
-    def _start_test(self, test_name, duration):
+    def _start_cycle(self, cycle_type, duration):
         if self.selected_battery_id is None:
             messagebox.showerror("Error", "Please select a battery before starting a test.")
             return
         if self.is_running:
-            messagebox.showwarning("Warning", "A test is already in progress.")
+            messagebox.showwarning("Warning", "A cycle is already in progress.")
             return
 
         self.clear_graph_and_stats()
-        self.cycle_label.config(text=f"Current Cycle: {test_name}")
+        self.cycle_label.config(text=f"Current Cycle: {cycle_type}")
         self.test_progress_bar['maximum'] = duration * 1000
         self.test_progress_bar['value'] = 0
         self.update_graph_xaxis(duration)
-        self.current_test_id = self.data_handler.create_new_test(self.selected_battery_id, duration, float(self.pass_fail_voltage_var.get()))
+
+        pass_fail_voltage = float(self.pass_fail_voltage_var.get())
+        self.current_cycle_id = self.data_handler.create_new_cycle(self.current_test_id, cycle_type, duration, pass_fail_voltage)
+
         self.is_running = True
 
         self.baseline_button.config(state=tk.DISABLED)
@@ -682,75 +687,22 @@ class DepassivationApp:
             battery = next((b for b in self.batteries if b['name'] == selected_name), None)
             tests = self.data_handler.get_tests_for_battery(battery['id']) if battery else []
 
-        from datetime import datetime, timedelta
-
-        tests_with_type = []
         for test in tests:
-            result_text = test['result'] or "Incomplete"
-            test_type = "Unknown"
-            if "Baseline Test" in result_text: test_type = "Baseline"
-            elif "Depassivation Cycle" in result_text: test_type = "Depassivation"
-            elif "Depassivation Check" in result_text: test_type = "Check"
+            # Insert a parent node for each test
+            test_node = self.history_tree.insert("", tk.END, text=f"Test {test['id']}",
+                                                 values=(test['id'], "Test", test['timestamp'], ""), open=True)
 
-            tests_with_type.append({
-                'id': test['id'], 'timestamp': test['timestamp'], 'result': result_text,
-                'duration': test['duration'], 'type': test_type
-            })
+            # Get cycles for this test and insert them as children
+            cycles = self.data_handler.get_cycles_for_test(test['id'])
+            for cycle in cycles:
+                tags = ()
+                if cycle['cycle_type'] == 'Baseline':
+                    tags = ('baseline',)
+                elif cycle['cycle_type'] == 'Check':
+                    tags = ('check',)
 
-        display_items = []
-        self.current_history_sequences = {}
-        i = 0
-        while i < len(tests_with_type):
-            is_sequence = False
-            if i <= len(tests_with_type) - 3:
-                test1 = tests_with_type[i]
-                test2 = tests_with_type[i+1]
-                test3 = tests_with_type[i+2]
-
-                if test1['type'] == "Baseline" and test2['type'] == "Depassivation" and test3['type'] == "Check":
-                    is_sequence = True
-                    try:
-                        t2_start = datetime.strptime(test2['timestamp'], "%Y-%m-%d %H:%M:%S")
-                        t2_end = t2_start + timedelta(seconds=test2['duration'])
-                        t3_start = datetime.strptime(test3['timestamp'], "%Y-%m-%d %H:%M:%S")
-                        time_diff = t3_start - t2_end
-
-                        total_seconds = max(0, time_diff.total_seconds())
-                        hours, remainder = divmod(total_seconds, 3600)
-                        minutes, seconds = divmod(remainder, 60)
-                        time_diff_str = ""
-                        if hours > 0: time_diff_str += f"{int(hours)}h "
-                        if minutes > 0: time_diff_str += f"{int(minutes)}m "
-                        time_diff_str += f"{int(seconds)}s"
-
-                        original_result = test3['result'].split(' - ')[-1]
-                        final_result_text = f"Completed - {original_result} ({time_diff_str} rest)"
-
-                        sequence_info = {'baseline': test1, 'depassivation': test2, 'check': test3, 'rest_time': time_diff_str}
-
-                        master_id = test1['id']
-                        self.current_history_sequences[master_id] = sequence_info
-
-                        display_items.append({
-                            'id': master_id, 'type': 'Sequence', 'timestamp': test1['timestamp'],
-                            'result': final_result_text, 'tags': ('check',)
-                        })
-
-                        i += 3
-                    except (ValueError, TypeError):
-                        is_sequence = False
-
-            if not is_sequence:
-                test = tests_with_type[i]
-                tags = ('baseline',) if "baseline" in test['type'].lower() else ()
-                display_items.append({
-                    'id': test['id'], 'type': test['type'], 'timestamp': test['timestamp'],
-                    'result': test['result'], 'tags': tags
-                })
-                i += 1
-
-        for item in display_items:
-            self.history_tree.insert("", tk.END, values=(item['id'], item['type'], item['timestamp'], item['result']), tags=item['tags'])
+                self.history_tree.insert(test_node, tk.END, text=cycle['cycle_type'],
+                                         values=(cycle['id'], cycle['cycle_type'], cycle['timestamp'], cycle['result'] or "Incomplete"), tags=tags)
 
     def update_graph_xaxis(self, duration):
         try:
@@ -765,7 +717,7 @@ class DepassivationApp:
         self.max_current = 0.0
         self.power = 0.0
         self.resistance = 0.0
-        self.last_completed_test_id = None
+        self.last_completed_cycle_id = None
         self.voltage_label.config(text="Current Voltage: -- V")
         self.current_label.config(text="Current: -- mA")
         self.max_current_label.config(text="Max Current: -- mA")
@@ -821,7 +773,8 @@ class DepassivationApp:
                         if r > self.live_max_resistance:
                             self.live_max_resistance = r
                             self.live_max_r_label.config(text=f"Max Resistance: {r:.2f} Ω")
-            except (ValueError, IndexError): pass
+            except (ValueError, IndexError) as e:
+                self.log_message(f"ERROR: Could not parse data: '{data}'. Exception: {e}")
         elif data.startswith("PROCESS_END"):
             self.is_running = False
             self.abort_button.config(state=tk.DISABLED)
@@ -829,7 +782,7 @@ class DepassivationApp:
             self.depassivation_button.config(state=tk.NORMAL if self.selected_battery_id else tk.DISABLED)
             self.check_button.config(state=tk.NORMAL if self.selected_battery_id else tk.DISABLED)
 
-            if self.current_test_id:
+            if self.current_cycle_id:
                 self.export_live_graph_button.config(state=tk.NORMAL)
                 self.export_live_data_button.config(state=tk.NORMAL)
                 result_status = "N/A"
@@ -841,28 +794,30 @@ class DepassivationApp:
                     result_status = "ERROR"
                     self.pass_fail_label.config(text=result_status, style="fail.TLabel")
 
-                test_name = self.cycle_label.cget("text").replace("Current Cycle: ", "")
-                final_result = f"{test_name} - {result_status}"
-                self.data_handler.update_test_result(self.min_voltage, self.max_current, self.power, self.resistance, final_result)
-                self.last_completed_test_id = self.current_test_id
-                self.current_test_id = None
+                cycle_type = self.cycle_label.cget("text").replace("Current Cycle: ", "")
+                final_result = f"{cycle_type} - {result_status}"
+                self.data_handler.update_cycle_result(self.current_cycle_id, self.min_voltage, self.max_current, self.power, self.resistance, final_result)
+                self.last_completed_cycle_id = self.current_cycle_id
+                self.current_cycle_id = None
 
             # --- FIX: Auto-select the battery that was just tested in the history view ---
-            if self.last_completed_test_id:
-                summary = self.data_handler.get_test_summary(self.last_completed_test_id)
-                if summary and summary['battery_id'] is not None:
-                    battery_id_to_select = summary['battery_id']
-                    all_batteries = self.data_handler.get_all_batteries()
-                    battery_to_select = next((b for b in all_batteries if b['id'] == battery_id_to_select), None)
-                    if battery_to_select:
-                        listbox_items = self.history_battery_list.get(0, tk.END)
-                        try:
-                            idx = listbox_items.index(battery_to_select['name'])
-                            self.history_battery_list.selection_clear(0, tk.END)
-                            self.history_battery_list.selection_set(idx)
-                            self.history_battery_list.see(idx)
-                        except ValueError:
-                            pass
+            if self.last_completed_cycle_id:
+                cycle_summary = self.data_handler.get_cycle_summary(self.last_completed_cycle_id)
+                if cycle_summary:
+                    test_summary = self.data_handler.get_test_summary(cycle_summary['test_id'])
+                    if test_summary and test_summary['battery_id'] is not None:
+                        battery_id_to_select = test_summary['battery_id']
+                        all_batteries = self.data_handler.get_all_batteries()
+                        battery_to_select = next((b for b in all_batteries if b['id'] == battery_id_to_select), None)
+                        if battery_to_select:
+                            listbox_items = self.history_battery_list.get(0, tk.END)
+                            try:
+                                idx = listbox_items.index(battery_to_select['name'])
+                                self.history_battery_list.selection_clear(0, tk.END)
+                                self.history_battery_list.selection_set(idx)
+                                self.history_battery_list.see(idx)
+                            except ValueError:
+                                pass
 
             self.on_history_battery_selected(None)
         elif data.startswith("DATA,"):
@@ -876,6 +831,7 @@ class DepassivationApp:
 
                 self.test_progress_bar['value'] = time_ms
                 self.data_points.append((time_ms / 1000.0, voltage, current))
+                self.data_handler.log_reading(self.current_cycle_id, time_ms, voltage, current)
                 self.voltage_label.config(text=f"Current Voltage: {voltage:.3f} V")
                 self.current_label.config(text=f"Current: {current:.1f} mA")
                 self.power_label.config(text=f"Power: {self.power:.1f} mW")
@@ -902,13 +858,14 @@ class DepassivationApp:
         self.delete_history_button.config(state=tk.NORMAL if selection else tk.DISABLED)
 
         if len(selection) == 1:
-            item_id = self.history_tree.selection()[0]
-            test_id = self.history_tree.item(item_id, "values")[0]
-
-            if test_id in self.current_history_sequences:
-                self.show_sequence_details(self.current_history_sequences[test_id])
+            item_id_str = self.history_tree.selection()[0]
+            # Check if it's a cycle (a child node)
+            if self.history_tree.parent(item_id_str):
+                cycle_id = self.history_tree.item(item_id_str, "values")[0]
+                self.show_cycle_details(cycle_id)
             else:
-                self.show_history_details(item_id)
+                # It's a test, clear details for now
+                self.clear_history_details()
         else:
             self.clear_history_details()
 
@@ -934,19 +891,18 @@ class DepassivationApp:
         self.export_history_graph_button.config(state=tk.DISABLED)
         self.export_history_data_button.config(state=tk.DISABLED)
 
-    def show_history_details(self, selected_item):
+    def show_cycle_details(self, cycle_id):
         self.history_stats_frame.tkraise()
-        self.current_sequence_info = None
+        self.current_sequence_info = None # This is from the old implementation
+        self.selected_history_test_id = cycle_id # Re-using this variable for export
 
-        test_id = self.history_tree.item(selected_item, "values")[0]
-        self.selected_history_test_id = test_id
-        summary = self.data_handler.get_test_summary(test_id)
+        summary = self.data_handler.get_cycle_summary(cycle_id)
         if not summary:
-            self.log_message(f"WARN: No details found for test ID {test_id}.")
+            self.log_message(f"WARN: No details found for cycle ID {cycle_id}.")
             return
 
-        data_points = self.data_handler.get_test_data(test_id)
-        self.history_id_label.config(text=f"Test ID: {summary['id']}")
+        data_points = self.data_handler.get_cycle_data(cycle_id)
+        self.history_id_label.config(text=f"Cycle ID: {summary['id']}")
         self.history_timestamp_label.config(text=f"Timestamp: {summary['timestamp']}")
         self.history_duration_label.config(text=f"Duration: {summary['duration']} s")
         self.history_pass_fail_voltage_label.config(text=f"Target Voltage: {summary['pass_fail_voltage']} V")
@@ -965,143 +921,39 @@ class DepassivationApp:
         else:
             self.export_history_graph_button.config(state=tk.DISABLED)
             self.export_history_data_button.config(state=tk.DISABLED)
-        self.history_ax1.set_title(f"Test Data (ID: {test_id})")
+        self.history_ax1.set_title(f"Cycle Data (ID: {cycle_id})")
         self.history_ax1.set_xlabel("Time (s)")
         self.history_ax1.set_ylabel("Voltage (V)")
         self.history_ax1.set_ylim(0, 5)
-        self.history_ax1.set_xlim(0, summary['duration'])
+        if summary['duration']:
+            self.history_ax1.set_xlim(0, summary['duration'])
         self.history_ax1.grid(True)
         self.history_fig1.tight_layout()
         self.history_canvas1.draw()
+
+        # Clear the second graph, as it was for sequence comparison
         self.history_ax2.cla()
         self.history_ax2.grid(True)
-        self.history_canvas2.draw()
-
-    def show_sequence_details(self, sequence_info):
-        self.history_comparison_frame.tkraise()
-        self.current_sequence_info = sequence_info
-        self.selected_history_test_id = None # Not a single test
-        self._plot_sequence_graph()
-
-        s1 = self.data_handler.get_test_summary(sequence_info['baseline']['id'])
-        s2 = self.data_handler.get_test_summary(sequence_info['depassivation']['id'])
-        s3 = self.data_handler.get_test_summary(sequence_info['check']['id'])
-        d1 = self.data_handler.get_test_data(s1['id'])
-        d3 = self.data_handler.get_test_data(s3['id'])
-
-        last_voltage1 = d1[-1][1] if d1 else None
-        last_voltage3 = d3[-1][1] if d3 else None
-
-        summaries = {"baseline": s1, "depassivation": s2, "check": s3}
-
-        for cycle, summary in summaries.items():
-            if not summary: continue
-
-            self.comparison_labels[f'{cycle}_test_id'].config(text=summary['id'])
-            self.comparison_labels[f'{cycle}_timestamp'].config(text=summary['timestamp'])
-            self.comparison_labels[f'{cycle}_duration'].config(text=f"{summary['duration']} s")
-            self.comparison_labels[f'{cycle}_max_voltage'].config(text=f"{summary['max_current']:.1f} mA" if summary['max_current'] is not None else "--")
-            self.comparison_labels[f'{cycle}_min_voltage'].config(text=f"{summary['min_voltage']:.3f} V" if summary['min_voltage'] is not None else "--")
-
-        self.comparison_labels['baseline_last_voltage'].config(text=f"{last_voltage1:.3f} V" if last_voltage1 is not None else "--")
-        self.comparison_labels['check_last_voltage'].config(text=f"{last_voltage3:.3f} V" if last_voltage3 is not None else "--")
-
-        # Result Section
-        if last_voltage1 is not None and last_voltage3 is not None:
-            diff = last_voltage3 - last_voltage1
-            color = "green" if diff > 0 else "red"
-
-            result_text = f"Last Voltage 1st Cycle: {last_voltage1:.3f} V\n"
-            result_text += f"Last Voltage 3rd Cycle: {last_voltage3:.3f} V\n"
-            result_text += f"Difference: {diff:+.3f} V"
-
-            result_label = ttk.Label(self.history_comparison_frame, text=result_text, foreground=color, font=('Helvetica', 11, 'bold'))
-            result_label.grid(row=len(self.metrics_to_display)+2, column=0, columnspan=4, sticky='w', padx=5, pady=10)
-
-    def _plot_sequence_graph(self):
-        if not self.current_sequence_info: return
-        self.history_ax1.cla()
-        self.history_ax2.cla()
-
-        s1 = self.data_handler.get_test_summary(self.current_sequence_info['baseline']['id'])
-        d1 = self.data_handler.get_test_data(s1['id'])
-        s2 = self.data_handler.get_test_summary(self.current_sequence_info['depassivation']['id'])
-        d2 = self.data_handler.get_test_data(s2['id'])
-        s3 = self.data_handler.get_test_summary(self.current_sequence_info['check']['id'])
-        d3 = self.data_handler.get_test_data(s3['id'])
-
-        # Plot 1: Depassivation cycle
-        if d2:
-            t, v, _ = zip(*d2)
-            self.history_ax1.plot(t, v, marker='.', linestyle='-', label=f"Depassivation (ID: {s2['id']})", color='orange')
-            self.history_ax1.set_xlim(0, s2['duration'])
-
-        self.history_ax1.set_title("Depassivation Cycle")
-        self.history_ax1.set_xlabel("Time (s)")
-        self.history_ax1.set_ylabel("Voltage (V)")
-        self.history_ax1.set_ylim(0, 5)
-        self.history_ax1.grid(True)
-        self.history_ax1.legend()
-        self.history_fig1.tight_layout()
-        self.history_canvas1.draw()
-
-        # Plot 2: Baseline vs. Check
-        max_duration = 0
-        if d1:
-            t, v, _ = zip(*d1)
-            self.history_ax2.plot(t, v, marker='.', linestyle='-', label=f"Baseline (ID: {s1['id']})", color='blue')
-            max_duration = max(max_duration, s1['duration'])
-        if d3:
-            t, v, _ = zip(*d3)
-            self.history_ax2.plot(t, v, marker='.', linestyle='-', label=f"Check (ID: {s3['id']})", color='green')
-            max_duration = max(max_duration, s3['duration'])
-
-        self.history_ax2.set_title("Baseline vs. Check")
-        self.history_ax2.set_xlabel("Time (s)")
-        self.history_ax2.set_ylabel("Voltage (V)")
-        self.history_ax2.set_ylim(0, 5)
-        if max_duration > 0:
-            self.history_ax2.set_xlim(0, max_duration)
-        self.history_ax2.grid(True)
-        self.history_ax2.legend()
-        self.history_fig2.tight_layout()
         self.history_canvas2.draw()
 
     def delete_selected_history_test(self):
         selection = self.history_tree.selection()
         if not selection:
-            messagebox.showwarning("Warning", "No test selected to delete.")
+            messagebox.showwarning("Warning", "No item selected to delete.", parent=self.root)
             return
 
         test_ids_to_delete = []
-        num_sequences = 0
-        num_individual_tests = 0
-
         for item_id_in_tree in selection:
-            test_id_str = self.history_tree.item(item_id_in_tree, "values")[0]
-            test_id = int(test_id_str)
+            # Only allow deleting top-level tests, not individual cycles
+            if not self.history_tree.parent(item_id_in_tree):
+                test_id_str = self.history_tree.item(item_id_in_tree, "values")[0]
+                test_ids_to_delete.append(int(test_id_str))
 
-            if test_id in self.current_history_sequences:
-                num_sequences += 1
-                sequence = self.current_history_sequences[test_id]
-                test_ids_to_delete.append(int(sequence['baseline']['id']))
-                test_ids_to_delete.append(int(sequence['depassivation']['id']))
-                test_ids_to_delete.append(int(sequence['check']['id']))
-            else:
-                num_individual_tests += 1
-                test_ids_to_delete.append(test_id)
+        if not test_ids_to_delete:
+            messagebox.showinfo("Info", "Please select a top-level test to delete. Individual cycles cannot be deleted.", parent=self.root)
+            return
 
-        test_ids_to_delete = sorted(list(set(test_ids_to_delete)))
-
-        msg_parts = []
-        if num_sequences > 0:
-            msg_parts.append(f"{num_sequences} sequence(s)")
-        if num_individual_tests > 0:
-            msg_parts.append(f"{num_individual_tests} individual test(s)")
-
-        if not msg_parts: return
-
-        confirm_msg = f"Are you sure you want to permanently delete {' and '.join(msg_parts)}?\nThis will delete a total of {len(test_ids_to_delete)} test records."
+        confirm_msg = f"Are you sure you want to permanently delete {len(test_ids_to_delete)} test(s)?\nThis will also delete all associated cycles and measurement data."
 
         if messagebox.askyesno("Confirm Delete", confirm_msg, parent=self.root):
             deleted_count = 0
@@ -1109,60 +961,66 @@ class DepassivationApp:
                 if self.data_handler.delete_test(test_id):
                     deleted_count += 1
             self.log_message(f"INFO: Deleted {deleted_count} test record(s).")
-            self.on_history_battery_selected()
+            self.on_history_battery_selected() # Refresh the view
             self.clear_history_details()
 
     def export_history_graph(self):
-        if self.current_sequence_info:
-            test_ids = f"seq_{self.current_sequence_info['baseline']['id']}_{self.current_sequence_info['check']['id']}"
-            initial_file = f"test_graph_{test_ids}.png"
-        elif self.selected_history_test_id:
-            initial_file = f"test_graph_{self.selected_history_test_id}.png"
-        else:
-            messagebox.showwarning("Warning", "Please select a test or sequence from the history list first.")
+        if self.selected_history_test_id is None:
+            messagebox.showwarning("Warning", "Please select a cycle from the history list first.", parent=self.root)
             return
 
-        filepath = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG files", "*.png")], title="Save History Graph As...", initialfile=initial_file)
+        initial_file = f"cycle_graph_{self.selected_history_test_id}.png"
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".png",
+            filetypes=[("PNG files", "*.png")],
+            title="Save History Graph As...",
+            initialfile=initial_file,
+            parent=self.root
+        )
         if not filepath: return
+
+        # We need to decide which figure to save. The new logic only uses history_fig1.
         try:
-            self.history_fig.savefig(filepath, dpi=300)
+            self.history_fig1.savefig(filepath, dpi=300)
             self.log_message(f"INFO: Saved history graph to {filepath}")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to save graph: {e}")
+            messagebox.showerror("Error", f"Failed to save graph: {e}", parent=self.root)
 
     def export_history_data(self):
-        if self.current_sequence_info:
-            test_id = self.current_sequence_info[self.history_graph_view if self.history_graph_view == 'depassivation' else 'baseline']['id']
-            if self.history_graph_view == 'comparison':
-                messagebox.showwarning("Warning", "CSV export for comparison view is not supported. Please select a single test or the depassivation view.")
-                return
-        elif self.selected_history_test_id:
-            test_id = self.selected_history_test_id
-        else:
-            messagebox.showwarning("Warning", "Please select a test from the history list first.")
+        if self.selected_history_test_id is None:
+            messagebox.showwarning("Warning", "Please select a cycle from the history list first.", parent=self.root)
             return
 
-        test_data = self.data_handler.get_test_data(test_id)
-        if not test_data:
-            messagebox.showwarning("Warning", "No data points found for the selected test.")
+        cycle_id = self.selected_history_test_id
+        cycle_data = self.data_handler.get_cycle_data(cycle_id)
+        if not cycle_data:
+            messagebox.showwarning("Warning", "No data points found for the selected cycle.", parent=self.root)
             return
 
-        filepath = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv")], title="Save History Data As...", initialfile=f"test_data_{test_id}.csv")
+        initial_file = f"cycle_data_{cycle_id}.csv"
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv")],
+            title="Save History Data As...",
+            initialfile=initial_file,
+            parent=self.root
+        )
         if not filepath: return
+
         try:
             with open(filepath, 'w', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow(['Timestamp_s', 'Voltage_V', 'Current_mA'])
-                writer.writerows(test_data)
+                writer.writerows(cycle_data)
             self.log_message(f"INFO: Saved history data to {filepath}")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to save data: {e}")
+            messagebox.showerror("Error", f"Failed to save data: {e}", parent=self.root)
 
     def export_live_graph(self):
-        if self.last_completed_test_id is None:
+        if self.last_completed_cycle_id is None:
             messagebox.showwarning("Warning", "Please complete a test before exporting.")
             return
-        filepath = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG files", "*.png")], title="Save Live Test Graph As...", initialfile=f"test_graph_{self.last_completed_test_id}.png")
+        filepath = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG files", "*.png")], title="Save Live Test Graph As...", initialfile=f"test_graph_{self.last_completed_cycle_id}.png")
         if not filepath: return
         try:
             self.fig.savefig(filepath, dpi=300)
@@ -1171,14 +1029,14 @@ class DepassivationApp:
             messagebox.showerror("Error", f"Failed to save graph: {e}")
 
     def export_live_data(self):
-        if self.last_completed_test_id is None:
+        if self.last_completed_cycle_id is None:
             messagebox.showwarning("Warning", "Please complete a test before exporting.")
             return
-        test_data = self.data_handler.get_test_data(self.last_completed_test_id)
+        test_data = self.data_handler.get_cycle_data(self.last_completed_cycle_id)
         if not test_data:
             messagebox.showwarning("Warning", "No data points found for the last test.")
             return
-        filepath = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv")], title="Save Live Test Data As...", initialfile=f"test_data_{self.last_completed_test_id}.csv")
+        filepath = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv")], title="Save Live Test Data As...", initialfile=f"test_data_{self.last_completed_cycle_id}.csv")
         if not filepath: return
         try:
             with open(filepath, 'w', newline='') as f:
