@@ -19,3 +19,4 @@ if __name__ == "__main__":
     # Pass the 'simulate' flag to the application's constructor
     app = DepassivationApp(root, simulate=args.simulate)
     root.mainloop()
+    
