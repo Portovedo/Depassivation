@@ -1,0 +1,7 @@
+{
+    "geometry": "1920x1021+-221+-1049",
+    "last_port": "/dev/cu.usbserial-0001",
+    "pass_fail_voltage": "3.0",
+    "baseline_duration": "10",
+    "depassivation_duration": "180"
+}
