@@ -135,6 +135,7 @@ class DepassivationApp:
         self.live_max_current = 0.0
         self.live_min_resistance = 0.0
         self.live_max_resistance = 0.0
+        self.comparison_result_label = None
 
         if self.simulation_mode:
             from simulation_handler import SimulationHandler
@@ -337,6 +338,9 @@ class DepassivationApp:
                 label = ttk.Label(self.history_comparison_frame, text="--")
                 label.grid(row=i, column=j, sticky='w', padx=5)
                 self.comparison_labels[label_key] = label
+
+        self.comparison_result_label = ttk.Label(self.history_comparison_frame, text="", font=('Helvetica', 11, 'bold'))
+        self.comparison_result_label.grid(row=len(self.metrics_to_display)+2, column=0, columnspan=4, sticky='w', padx=5, pady=10)
 
         self.history_stats_frame.tkraise()
         export_frame = ttk.Frame(details_frame, padding=(0, 10))
@@ -687,187 +691,158 @@ class DepassivationApp:
             battery = next((b for b in self.batteries if b['name'] == selected_name), None)
             tests = self.data_handler.get_tests_for_battery(battery['id']) if battery else []
 
+        self.current_history_sequences = {} # Reset sequences
+        display_items = []
+
         for test in tests:
-            # Insert a parent node for each test
-            test_node = self.history_tree.insert("", tk.END, text=f"Test {test['id']}",
-                                                 values=(test['id'], "Test", test['timestamp'], ""), open=True)
-
-            # Get cycles for this test and insert them as children
             cycles = self.data_handler.get_cycles_for_test(test['id'])
+
+            cycles_by_type = {}
             for cycle in cycles:
-                tags = ()
-                if cycle['cycle_type'] == 'Baseline':
-                    tags = ('baseline',)
-                elif cycle['cycle_type'] == 'Check':
-                    tags = ('check',)
+                if cycle['cycle_type'] not in cycles_by_type:
+                    cycles_by_type[cycle['cycle_type']] = []
+                cycles_by_type[cycle['cycle_type']].append(cycle)
 
-                self.history_tree.insert(test_node, tk.END, text=cycle['cycle_type'],
-                                         values=(cycle['id'], cycle['cycle_type'], cycle['timestamp'], cycle['result'] or "Incomplete"), tags=tags)
+            if 'Baseline' in cycles_by_type and 'Depassivation' in cycles_by_type and 'Check' in cycles_by_type:
+                baseline = cycles_by_type['Baseline'][0]
+                depass = cycles_by_type['Depassivation'][0]
+                check = cycles_by_type['Check'][0]
 
-    def update_graph_xaxis(self, duration):
-        try:
-            if duration > 0:
-                self.ax.set_xlim(0, duration)
-                self.canvas.draw()
-        except (ValueError, tk.TclError): pass
+                sequence_info = {'baseline': baseline, 'depassivation': depass, 'check': check}
 
-    def clear_graph_and_stats(self):
-        self.data_points = []
-        self.min_voltage = 0.0
-        self.max_current = 0.0
-        self.power = 0.0
-        self.resistance = 0.0
-        self.last_completed_cycle_id = None
-        self.voltage_label.config(text="Current Voltage: -- V")
-        self.current_label.config(text="Current: -- mA")
-        self.max_current_label.config(text="Max Current: -- mA")
-        self.min_voltage_label.config(text="Min Voltage: -- V")
-        self.power_label.config(text="Power: -- mW")
-        self.resistance_label.config(text="Resistance: -- Ω")
-        self.pass_fail_label.config(text="---", style="TLabel")
-        if hasattr(self, 'export_live_graph_button'):
-            self.export_live_graph_button.config(state=tk.DISABLED)
-            self.export_live_data_button.config(state=tk.DISABLED)
-        self.ax.cla()
-        self.ax.grid(True)
-        self.canvas.draw()
+                master_id = test['id']
+                self.current_history_sequences[str(master_id)] = sequence_info
 
-    def update_graph(self):
-        self.ax.cla()
-        if self.data_points:
-            times, voltages, _ = zip(*self.data_points)
-            self.ax.plot(times, voltages, marker='o', linestyle='-')
-        self.ax.grid(True)
-        self.update_graph_xaxis(self.test_progress_bar['maximum'] / 1000.0)
-        self.canvas.draw()
+                display_items.append({
+                    'id': master_id,
+                    'type': 'Sequence',
+                    'timestamp': test['timestamp'],
+                    'result': check['result'] or "Incomplete",
+                    'tags': ('check',)
+                })
+            else:
+                for cycle in cycles:
+                    display_items.append({
+                        'id': cycle['id'],
+                        'type': cycle['cycle_type'],
+                        'timestamp': cycle['timestamp'],
+                        'result': cycle['result'] or "Incomplete",
+                        'tags': ('baseline',) if cycle['cycle_type'] == 'Baseline' else ()
+                    })
 
-    def handle_serial_data(self, data):
-        self.log_message(f"RECV: {data}")
-        if data.startswith("BTN_PRESS"):
-            _, button = data.split(',')
-            # Physical buttons are not tied to specific tests in this UI version
-        elif data.startswith("LIVE_DATA"):
-            try:
-                _, v_str, c_str, p_str, r_str = data.split(',')
-                v = float(v_str)
-                self.live_voltage_label.config(text=f"Voltage: {v:.3f} V")
-
-                if self.mosfet_on:
-                    c = float(c_str)
-                    p = float(p_str)
-                    r = float(r_str)
-                    self.live_current_label.config(text=f"Current: {c:.1f} mA")
-                    self.live_power_label.config(text=f"Power: {p:.1f} mW")
-                    self.live_resistance_label.config(text=f"Resistance: {r:.2f} Ω")
-
-                    if self.live_min_voltage == 0.0 or v < self.live_min_voltage:
-                        self.live_min_voltage = v
-                        self.live_min_v_label.config(text=f"Min Voltage: {v:.3f} V")
-                    if c > self.live_max_current:
-                        self.live_max_current = c
-                        self.live_max_c_label.config(text=f"Max Current: {c:.1f} mA")
-                    if r > 0:
-                        if self.live_min_resistance == 0.0 or r < self.live_min_resistance:
-                            self.live_min_resistance = r
-                            self.live_min_r_label.config(text=f"Min Resistance: {r:.2f} Ω")
-                        if r > self.live_max_resistance:
-                            self.live_max_resistance = r
-                            self.live_max_r_label.config(text=f"Max Resistance: {r:.2f} Ω")
-            except (ValueError, IndexError) as e:
-                self.log_message(f"ERROR: Could not parse data: '{data}'. Exception: {e}")
-        elif data.startswith("PROCESS_END"):
-            self.is_running = False
-            self.abort_button.config(state=tk.DISABLED)
-            self.baseline_button.config(state=tk.NORMAL if self.selected_battery_id else tk.DISABLED)
-            self.depassivation_button.config(state=tk.NORMAL if self.selected_battery_id else tk.DISABLED)
-            self.check_button.config(state=tk.NORMAL if self.selected_battery_id else tk.DISABLED)
-
-            if self.current_cycle_id:
-                self.export_live_graph_button.config(state=tk.NORMAL)
-                self.export_live_data_button.config(state=tk.NORMAL)
-                result_status = "N/A"
-                try:
-                    pass_voltage = float(self.pass_fail_voltage_var.get())
-                    result_status = "PASS" if self.min_voltage >= pass_voltage else "FAIL"
-                    self.pass_fail_label.config(text=result_status, style=f"{result_status.lower()}.TLabel")
-                except ValueError:
-                    result_status = "ERROR"
-                    self.pass_fail_label.config(text=result_status, style="fail.TLabel")
-
-                cycle_type = self.cycle_label.cget("text").replace("Current Cycle: ", "")
-                final_result = f"{cycle_type} - {result_status}"
-                self.data_handler.update_cycle_result(self.current_cycle_id, self.min_voltage, self.max_current, self.power, self.resistance, final_result)
-                self.last_completed_cycle_id = self.current_cycle_id
-                self.current_cycle_id = None
-
-            # --- FIX: Auto-select the battery that was just tested in the history view ---
-            if self.last_completed_cycle_id:
-                cycle_summary = self.data_handler.get_cycle_summary(self.last_completed_cycle_id)
-                if cycle_summary:
-                    test_summary = self.data_handler.get_test_summary(cycle_summary['test_id'])
-                    if test_summary and test_summary['battery_id'] is not None:
-                        battery_id_to_select = test_summary['battery_id']
-                        all_batteries = self.data_handler.get_all_batteries()
-                        battery_to_select = next((b for b in all_batteries if b['id'] == battery_id_to_select), None)
-                        if battery_to_select:
-                            listbox_items = self.history_battery_list.get(0, tk.END)
-                            try:
-                                idx = listbox_items.index(battery_to_select['name'])
-                                self.history_battery_list.selection_clear(0, tk.END)
-                                self.history_battery_list.selection_set(idx)
-                                self.history_battery_list.see(idx)
-                            except ValueError:
-                                pass
-
-            self.on_history_battery_selected(None)
-        elif data.startswith("DATA,"):
-            try:
-                _, time_ms_str, voltage_v, current_ma, power_mw, resistance_ohm = data.split(',')
-                time_ms = int(time_ms_str)
-                voltage = float(voltage_v)
-                current = float(current_ma)
-                self.power = float(power_mw)
-                self.resistance = float(resistance_ohm)
-
-                self.test_progress_bar['value'] = time_ms
-                self.data_points.append((time_ms / 1000.0, voltage, current))
-                self.data_handler.log_reading(self.current_cycle_id, time_ms, voltage, current)
-                self.voltage_label.config(text=f"Current Voltage: {voltage:.3f} V")
-                self.current_label.config(text=f"Current: {current:.1f} mA")
-                self.power_label.config(text=f"Power: {self.power:.1f} mW")
-                self.resistance_label.config(text=f"Resistance: {self.resistance:.2f} Ω")
-
-                if current > self.max_current:
-                    self.max_current = current
-                    self.max_current_label.config(text=f"Max Current: {self.max_current:.1f} mA")
-                if self.min_voltage == 0.0 or voltage < self.min_voltage:
-                    self.min_voltage = voltage
-                    self.min_voltage_label.config(text=f"Min Voltage: {self.min_voltage:.3f} V")
-                self.update_graph()
-            except (ValueError, IndexError): pass
-
-    def on_closing(self):
-        if self.is_running: self.abort_process()
-        self.data_handler.save_config()
-        if self.connection_handler:
-            self.connection_handler.disconnect()
-        self.root.destroy()
+        for item in display_items:
+            self.history_tree.insert("", tk.END, iid=item['id'], values=(item['id'], item['type'], item['timestamp'], item['result']), tags=item['tags'])
 
     def on_history_selection_change(self, event):
         selection = self.history_tree.selection()
         self.delete_history_button.config(state=tk.NORMAL if selection else tk.DISABLED)
 
         if len(selection) == 1:
-            item_id_str = self.history_tree.selection()[0]
-            # Check if it's a cycle (a child node)
-            if self.history_tree.parent(item_id_str):
-                cycle_id = self.history_tree.item(item_id_str, "values")[0]
-                self.show_cycle_details(cycle_id)
+            item_id = self.history_tree.selection()[0]
+
+            if item_id in self.current_history_sequences:
+                sequence_info = self.current_history_sequences[item_id]
+                self.show_sequence_details(sequence_info)
             else:
-                # It's a test, clear details for now
-                self.clear_history_details()
+                cycle_id = int(item_id)
+                self.show_cycle_details(cycle_id)
         else:
             self.clear_history_details()
+
+    def show_sequence_details(self, sequence_info):
+        self.history_comparison_frame.tkraise()
+        self.current_sequence_info = sequence_info
+        self.selected_history_test_id = None # Not a single cycle
+
+        baseline_data = self.data_handler.get_cycle_data(sequence_info['baseline']['id'])
+        depass_data = self.data_handler.get_cycle_data(sequence_info['depassivation']['id'])
+        check_data = self.data_handler.get_cycle_data(sequence_info['check']['id'])
+
+        # --- Plot 1: Depassivation cycle ---
+        self.history_ax1.cla()
+        if depass_data:
+            times, voltages, _ = zip(*depass_data)
+            self.history_ax1.plot(times, voltages, marker='.', linestyle='-', label=f"Depassivation (ID: {sequence_info['depassivation']['id']})", color='orange')
+
+            min_v = min(voltages) if voltages else 0
+            max_v = max(voltages) if voltages else 5
+            margin = (max_v - min_v) * 0.1 if (max_v - min_v) > 0 else 0.1
+            self.history_ax1.set_ylim(min_v - margin, max_v + margin)
+
+        self.history_ax1.set_title("Depassivation Cycle")
+        self.history_ax1.set_xlabel("Time (s)")
+        self.history_ax1.set_ylabel("Voltage (V)")
+        self.history_ax1.grid(True)
+        self.history_ax1.legend()
+        self.history_fig1.tight_layout()
+        self.history_canvas1.draw()
+
+        # --- Plot 2: Baseline vs. Check ---
+        self.history_ax2.cla()
+        all_voltages = []
+        max_duration = 0
+
+        if baseline_data:
+            times, voltages, _ = zip(*baseline_data)
+            all_voltages.extend(voltages)
+            max_duration = max(max_duration, sequence_info['baseline']['duration'])
+            self.history_ax2.plot(times, voltages, marker='.', linestyle='-', label=f"Baseline (ID: {sequence_info['baseline']['id']})", color='blue')
+
+        if check_data:
+            times, voltages, _ = zip(*check_data)
+            all_voltages.extend(voltages)
+            max_duration = max(max_duration, sequence_info['check']['duration'])
+            self.history_ax2.plot(times, voltages, marker='.', linestyle='-', label=f"Check (ID: {sequence_info['check']['id']})", color='green')
+
+        if all_voltages:
+            min_v = min(all_voltages)
+            max_v = max(all_voltages)
+            margin = (max_v - min_v) * 0.1 if (max_v - min_v) > 0 else 0.1
+            self.history_ax2.set_ylim(min_v - margin, max_v + margin)
+
+        self.history_ax2.set_title("Baseline vs. Check")
+        self.history_ax2.set_xlabel("Time (s)")
+        self.history_ax2.set_ylabel("Voltage (V)")
+        if max_duration > 0:
+            self.history_ax2.set_xlim(0, max_duration)
+        self.history_ax2.grid(True)
+        self.history_ax2.legend()
+        self.history_fig2.tight_layout()
+        self.history_canvas2.draw()
+
+        self.export_history_graph_button.config(state=tk.NORMAL)
+        self.export_history_data_button.config(state=tk.NORMAL)
+
+        # --- Populate Comparison Metrics ---
+        summaries = {
+            "baseline": sequence_info['baseline'],
+            "depassivation": sequence_info['depassivation'],
+            "check": sequence_info['check']
+        }
+
+        for cycle_type, summary in summaries.items():
+            if not summary: continue
+
+            self.comparison_labels[f'{cycle_type}_test_id'].config(text=summary['id'])
+            self.comparison_labels[f'{cycle_type}_timestamp'].config(text=summary['timestamp'])
+            self.comparison_labels[f'{cycle_type}_duration'].config(text=f"{summary['duration']} s")
+            self.comparison_labels[f'{cycle_type}_max_voltage'].config(text=f"{summary['max_current']:.1f} mA" if summary['max_current'] is not None else "--")
+            self.comparison_labels[f'{cycle_type}_min_voltage'].config(text=f"{summary['min_voltage']:.3f} V" if summary['min_voltage'] is not None else "--")
+
+        baseline_last_v = baseline_data[-1][1] if baseline_data else None
+        check_last_v = check_data[-1][1] if check_data else None
+        self.comparison_labels['baseline_last_voltage'].config(text=f"{baseline_last_v:.3f} V" if baseline_last_v is not None else "--")
+        # Depassivation doesn't have a "last voltage" in the comparison view
+        self.comparison_labels['depassivation_last_voltage'].config(text="--")
+        self.comparison_labels['check_last_voltage'].config(text=f"{check_last_v:.3f} V" if check_last_v is not None else "--")
+
+        if baseline_last_v is not None and check_last_v is not None:
+            diff = check_last_v - baseline_last_v
+            color = "green" if diff >= 0 else "red"
+            result_text = f"Voltage Change (Check - Baseline): {diff:+.3f} V"
+            self.comparison_result_label.config(text=result_text, foreground=color)
+        else:
+            self.comparison_result_label.config(text="")
 
     def clear_history_details(self):
         self.selected_history_test_id = None
@@ -893,8 +868,8 @@ class DepassivationApp:
 
     def show_cycle_details(self, cycle_id):
         self.history_stats_frame.tkraise()
-        self.current_sequence_info = None # This is from the old implementation
-        self.selected_history_test_id = cycle_id # Re-using this variable for export
+        self.current_sequence_info = None
+        self.selected_history_test_id = cycle_id
 
         summary = self.data_handler.get_cycle_summary(cycle_id)
         if not summary:
@@ -918,20 +893,24 @@ class DepassivationApp:
             self.export_history_data_button.config(state=tk.NORMAL)
             times, voltages, _ = zip(*data_points)
             self.history_ax1.plot(times, voltages, marker='o', linestyle='-')
+
+            min_v = min(voltages) if voltages else 0
+            max_v = max(voltages) if voltages else 5
+            margin = (max_v - min_v) * 0.1 if (max_v - min_v) > 0 else 0.1
+            self.history_ax1.set_ylim(min_v - margin, max_v + margin)
         else:
             self.export_history_graph_button.config(state=tk.DISABLED)
             self.export_history_data_button.config(state=tk.DISABLED)
+
         self.history_ax1.set_title(f"Cycle Data (ID: {cycle_id})")
         self.history_ax1.set_xlabel("Time (s)")
         self.history_ax1.set_ylabel("Voltage (V)")
-        self.history_ax1.set_ylim(0, 5)
         if summary['duration']:
             self.history_ax1.set_xlim(0, summary['duration'])
         self.history_ax1.grid(True)
         self.history_fig1.tight_layout()
         self.history_canvas1.draw()
 
-        # Clear the second graph, as it was for sequence comparison
         self.history_ax2.cla()
         self.history_ax2.grid(True)
         self.history_canvas2.draw()
